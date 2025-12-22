@@ -233,7 +233,9 @@ def score_shades(
     query: QuerySpec,
     *,
     lambda_constraints: float = 1.0,
+    proto_row_override: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
+
     _require_cols(
         df,
         ("product_id", "shade_id", "brand_name", "product_name", "shade_name", "url", "L_lab", "a_lab", "b_lab"),
@@ -245,10 +247,13 @@ def score_shades(
     if work.empty:
         raise ValueError("No rows with valid Lab values to score.")
 
-    proto = prototypes.loc[prototypes["cluster_id"] == query.like_cluster_id]
-    if proto.empty:
-        raise ValueError(f"Unknown cluster_id={query.like_cluster_id} in prototypes.")
-    proto_row = proto.iloc[0]
+    if proto_row_override is not None:
+        proto_row = proto_row_override
+    else:
+        proto = prototypes.loc[prototypes["cluster_id"] == query.like_cluster_id]
+        if proto.empty:
+            raise ValueError(f"Unknown cluster_id={query.like_cluster_id} in prototypes.")
+        proto_row = proto.iloc[0]
 
     deltaE = _delta_e_to_proto(work, proto_row)
 
@@ -307,6 +312,44 @@ def score_shades(
     out["rank"] = np.arange(1, len(out) + 1)
     return out
 
+def _parse_mix_block(parts: List[str], start_i: int) -> tuple[Optional[dict[str, float]], int]:
+    """
+    Parse MIX:primary=...;secondary=...;alpha=...
+    Returns (mix_spec, next_index_after_mix).
+    mix_spec keys: primary(int), secondary(int), alpha(float)
+    """
+    part = parts[start_i]
+    if not part.startswith("MIX:"):
+        return None, start_i
+
+    payload = part[len("MIX:"):].strip()
+    kv: dict[str, str] = {}
+
+    def _ingest(token: str) -> None:
+        if "=" not in token:
+            return
+        k, v = token.split("=", 1)
+        kv[k.strip()] = v.strip()
+
+    if payload:
+        _ingest(payload)
+
+    i = start_i + 1
+    # swallow subsequent k=v tokens until the next real constraint (<= or >=)
+    while i < len(parts) and ("=" in parts[i]) and (("<=" not in parts[i]) and (">=" not in parts[i])):
+        _ingest(parts[i])
+        i += 1
+
+    if not {"primary", "secondary", "alpha"}.issubset(kv.keys()):
+        raise ValueError(f"Incomplete MIX block: got keys={sorted(kv.keys())}, need primary/secondary/alpha")
+
+    primary = int(float(kv["primary"]))
+    secondary = int(float(kv["secondary"]))
+    alpha = float(kv["alpha"])
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"Invalid MIX alpha={alpha}. Must be in [0,1].")
+
+    return {"primary": primary, "secondary": secondary, "alpha": alpha}, i
 
 def score_inventory(
     *,
@@ -320,28 +363,65 @@ def score_inventory(
     """
     Programmatic API equivalent to the CLI.
     `constraints` may be a ';' separated string of DIM<=level:weight.
+    Supports: MIX:primary=..;secondary=..;alpha=..
     """
     inv = _ensure_cluster_id(inventory, prototypes, assignments_path)
 
     parts = [p.strip() for p in (constraints or "").split(";") if p.strip()]
 
+    mix_spec: Optional[dict[str, float]] = None
     cons: List[Constraint] = []
+
     i = 0
     while i < len(parts):
         part = parts[i]
 
-        # MIX block: swallow "MIX:primary=.." + subsequent "k=v" tokens
         if part.startswith("MIX:"):
-            i += 1
-            while i < len(parts) and ("=" in parts[i]) and (("<=" not in parts[i]) and (">=" not in parts[i])):
-                i += 1
+            mix_spec, i = _parse_mix_block(parts, i)
             continue
 
         cons.append(_parse_constraint(part))
         i += 1
 
-    query = QuerySpec(like_cluster_id=int(cluster_id), constraints=tuple(cons))
-    return score_shades(inv, prototypes, query, lambda_constraints=float(lambda_constraints))
+    # default: use provided cluster_id (CLI-like)
+    query_cluster_id = int(cluster_id)
+
+    proto_override: Optional[pd.Series] = None
+    if mix_spec is not None:
+        primary = int(mix_spec["primary"])
+        secondary = int(mix_spec["secondary"])
+        alpha = float(mix_spec["alpha"])
+
+        p1 = prototypes.loc[prototypes["cluster_id"] == primary]
+        p2 = prototypes.loc[prototypes["cluster_id"] == secondary]
+        if p1.empty or p2.empty:
+            raise ValueError(f"MIX references unknown cluster_id(s): primary={primary}, secondary={secondary}")
+
+        r1 = p1.iloc[0]
+        r2 = p2.iloc[0]
+
+        # Blend in Lab space (what your scoring uses)
+        proto_override = pd.Series(
+            {
+                "L_lab": alpha * float(r1["L_lab"]) + (1.0 - alpha) * float(r2["L_lab"]),
+                "a_lab": alpha * float(r1["a_lab"]) + (1.0 - alpha) * float(r2["a_lab"]),
+                "b_lab": alpha * float(r1["b_lab"]) + (1.0 - alpha) * float(r2["b_lab"]),
+            }
+        )
+
+        # For bookkeeping, keep the "like_cluster_id" as primary (or keep input cluster_id).
+        query_cluster_id = primary
+
+    query = QuerySpec(like_cluster_id=query_cluster_id, constraints=tuple(cons))
+
+    return score_shades(
+        inv,
+        prototypes,
+        query,
+        lambda_constraints=float(lambda_constraints),
+        proto_row_override=proto_override,
+    )
+
 
 
 # ---------------------------------------------------------------------
