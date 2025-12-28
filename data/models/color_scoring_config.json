@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+
+  "scoring": {
+    "lambda_constraints": 1.0,
+    "lambda_preference": 0.0
+  },
+
+  "evaluation": {
+    "topk": 20,
+    "diversity_hue_bins": 12
+  },
+
+  "notes": "Baseline calibrated scoring. No user preference."
+}
