@@ -1,0 +1,330 @@
+# src/Shopping_assistant/nlp/constraints.py
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import spacy
+from spacy.tokens import Doc, Token
+
+from Shopping_assistant.nlp.axes.mapper import AxisMapper
+from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Strength
+
+
+# ---------------------------------------------------------------------
+# spaCy loader (fail fast with explicit install instruction)
+# ---------------------------------------------------------------------
+
+def _load_spacy(model: str = "en_core_web_sm") -> spacy.language.Language:
+    try:
+        return spacy.load(model)
+    except OSError as e:
+        raise RuntimeError(
+            f"spaCy model '{model}' is not installed. "
+            f"Install it with: python -m spacy download {model}"
+        ) from e
+
+
+# ---------------------------------------------------------------------
+# Axis mapping: small optional lexicon + transformer fallback
+# ---------------------------------------------------------------------
+# Keep this lexicon SMALL. It is only for precision on the most frequent words.
+# Everything else goes through AxisMapper (semantic, non-static word coverage).
+
+_AXIS_LEXICON: Dict[str, Axis] = {
+    # brightness/lightness
+    "bright": Axis.BRIGHTNESS,
+    "light": Axis.BRIGHTNESS,
+
+    # depth (often "dark/deep" language)
+    "deep": Axis.DEPTH,
+    "dark": Axis.DEPTH,
+
+    # saturation/chroma
+    "muted": Axis.SATURATION,
+    "soft": Axis.SATURATION,
+    "subtle": Axis.SATURATION,
+    "saturated": Axis.SATURATION,
+
+    # vibrancy/neonness
+    "neon": Axis.VIBRANCY,
+    "vibrant": Axis.VIBRANCY,
+
+    # clarity
+    "crisp": Axis.CLARITY,
+    "clean": Axis.CLARITY,
+    "muddy": Axis.CLARITY,
+    "dull": Axis.CLARITY,
+}
+
+_AXIS_MAPPER: AxisMapper | None = None
+
+
+def _get_axis_mapper(model_name: str = "all-MiniLM-L6-v2") -> AxisMapper:
+    global _AXIS_MAPPER
+    if _AXIS_MAPPER is None:
+        _AXIS_MAPPER = AxisMapper(model_name=model_name)
+    return _AXIS_MAPPER
+
+
+def _axis_from_token(
+    tok: Token,
+    *,
+    mapper_model: str = "all-MiniLM-L6-v2",
+    mapper_threshold: float = 0.35,
+) -> Tuple[Optional[Axis], Dict[str, Any]]:
+    """
+    Does:
+        Map a descriptive token (ADJ or adjectival NOUN) to one of the axes using:
+        - small precision lexicon
+        - semantic AxisMapper fallback
+    """
+    lemma = tok.lemma_.lower()
+    meta: Dict[str, Any] = {"tok_lemma": lemma, "tok_pos": tok.pos_, "tok_text": tok.text}
+
+    axis = _AXIS_LEXICON.get(lemma)
+    if axis is not None:
+        meta.update({"axis_source": "lexicon", "axis_score": 1.0, "axis": axis.value})
+        return axis, meta
+
+    match = _get_axis_mapper(mapper_model).map_adj_to_axis(
+        lemma,
+        threshold=mapper_threshold,
+        return_topk=1,
+    )
+
+    if match is None:
+        meta.update({"axis_source": "mapper", "axis_score": 0.0, "axis": None})
+        return None, meta
+
+    meta.update(
+        {
+            "axis_source": "mapper",
+            "axis_score": match.score,
+            "axis": match.axis.value,
+        }
+    )
+    return match.axis, meta
+
+
+# ---------------------------------------------------------------------
+# Dependency-based signals (no trigger lists)
+# ---------------------------------------------------------------------
+
+def _has_negation(tok: Token) -> bool:
+    return any(ch.dep_ == "neg" for ch in tok.children)
+
+
+def _degree_adverbs(tok: Token) -> List[Token]:
+    # Degree/intensity usually appears as ADV with dep_ "advmod"
+    return [ch for ch in tok.children if ch.dep_ == "advmod" and ch.pos_ == "ADV"]
+
+
+def _degree_strength(tok: Token) -> Strength:
+    """
+    Does:
+        Convert syntactic degree modifiers into a coarse strength.
+    """
+    deg = _degree_adverbs(tok)
+    if not deg:
+        return Strength.MED
+    if len(deg) >= 2:
+        return Strength.STRONG
+    if deg[0].lemma_.lower() == "too":
+        return Strength.STRONG
+    return Strength.MED
+
+
+def _direction_from_context(tok: Token) -> Direction:
+    """
+    Does:
+        Infer direction from dependency context.
+        - "less X" => LOWER
+        - "more X" => RAISE
+        - "too X"  => LOWER (cap)  [do NOT invert on negation: "not too X" still LOWER]
+        Default => RAISE
+        Then invert if negated ("not ..."), except cap-case.
+    """
+    direction = Direction.RAISE
+    has_too = False
+
+    for ch in tok.children:
+        if ch.dep_ == "advmod":
+            lemma = ch.lemma_.lower()
+            if lemma == "less":
+                direction = Direction.LOWER
+            elif lemma == "more":
+                direction = Direction.RAISE
+            elif lemma == "too":
+                direction = Direction.LOWER
+                has_too = True
+
+    if _has_negation(tok) and not has_too:
+        direction = Direction.LOWER if direction == Direction.RAISE else Direction.RAISE
+
+    return direction
+
+
+def _evidence(tok: Token) -> tuple[str, int, int]:
+    """
+    Does:
+        Build a minimal evidence span around the token:
+        - token itself
+        - neg child ("not")
+        - directional/cap degree advmods: {too, more, less}
+    """
+    keep_adv = {"too", "more", "less"}
+
+    toks = [tok]
+    for ch in tok.children:
+        if ch.dep_ == "neg":
+            toks.append(ch)
+        elif ch.dep_ == "advmod" and ch.pos_ == "ADV" and ch.lemma_.lower() in keep_adv:
+            toks.append(ch)
+
+    toks = sorted({t.i: t for t in toks}.values(), key=lambda t: t.i)
+
+    start = toks[0].idx
+    last = toks[-1]
+    end = last.idx + len(last.text)
+
+    evidence = " ".join(t.text for t in toks)
+    return evidence, int(start), int(end)
+
+
+def _is_adjectival_noun(tok: Token) -> bool:
+    """
+    Does:
+        Heuristic: accept NOUN tokens that behave like adjectives in short phrases,
+        e.g., "neon pink", "too neon".
+    """
+    if tok.pos_ != "NOUN":
+        return False
+    if tok.is_stop or tok.is_punct or tok.is_space:
+        return False
+    if len(tok.text) <= 2:
+        return False
+    # common adjectival roles: amod (modifier), acomp (complement), attr
+    if tok.dep_ in {"amod", "acomp", "attr"}:
+        return True
+    # allow "too neon": neon as complement-like token
+    if any(ch.dep_ == "advmod" and ch.lemma_.lower() in {"too", "very", "so"} for ch in tok.children):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------
+
+def extract_constraints_from_doc(
+    doc: Doc,
+    *,
+    clause_id: int,
+    blocked_lemmas: Optional[set[str]] = None,
+    mapper_model: str = "all-MiniLM-L6-v2",
+    mapper_threshold: float = 0.35,
+) -> List[Constraint]:
+
+    """
+    Does:
+        Extract constraints using spaCy dependency structure + transformer axis mapping fallback.
+    """
+    out: List[Constraint] = []
+
+    for tok in doc:
+        if tok.pos_ == "ADJ":
+            pass
+        elif _is_adjectival_noun(tok):
+            pass
+        else:
+            continue
+
+        lemma = tok.lemma_.lower()
+        if blocked_lemmas and lemma in blocked_lemmas:
+            continue
+
+        axis, axis_meta = _axis_from_token(
+            tok,
+            mapper_model=mapper_model,
+            mapper_threshold=mapper_threshold,
+        )
+        if axis is None:
+            continue
+
+        direction = _direction_from_context(tok)
+        strength = _degree_strength(tok)
+        evidence, ev_start, ev_end = _evidence(tok)
+
+        out.append(
+            Constraint(
+                axis=axis,
+                direction=direction,
+                strength=strength,
+                evidence=evidence,
+                clause_id=clause_id,
+                confidence=float(axis_meta.get("axis_score", 0.0)),
+                scope=None,
+                meta={
+                    **axis_meta,
+                    "tok": tok.text,
+                    "negated": _has_negation(tok),
+                    "children": [(c.text, c.dep_, c.pos_, c.lemma_) for c in tok.children],
+                    "direction": direction.value,
+                    "strength": strength.value,
+                    "evidence_char_start": ev_start,
+                    "evidence_char_end": ev_end,
+
+                },
+            )
+        )
+
+    return out
+
+
+def extract_constraints_from_clause_text(
+    clause_text: str,
+    *,
+    clause_id: int,
+    blocked_lemmas: Optional[set[str]] = None,
+    nlp: Optional[spacy.language.Language] = None,
+    spacy_model: str = "en_core_web_sm",
+    mapper_model: str = "all-MiniLM-L6-v2",
+    mapper_threshold: float = 0.35,
+) -> List[Constraint]:
+    nlp_ = nlp or _load_spacy(spacy_model)
+    doc = nlp_(clause_text)
+    return extract_constraints_from_doc(
+        doc,
+        clause_id=clause_id,
+        blocked_lemmas=blocked_lemmas,
+        mapper_model=mapper_model,
+        mapper_threshold=mapper_threshold,
+    )
+
+
+
+def extract_constraints(
+    clauses: Iterable[Tuple[int, str]],
+    *,
+    nlp: Optional[spacy.language.Language] = None,
+    spacy_model: str = "en_core_web_sm",
+    mapper_model: str = "all-MiniLM-L6-v2",
+    mapper_threshold: float = 0.35,
+) -> List[Constraint]:
+    """
+    Does:
+        Extract constraints from multiple (clause_id, clause_text) pairs.
+    """
+    nlp_ = nlp or _load_spacy(spacy_model)
+    out: List[Constraint] = []
+    for cid, text in clauses:
+        doc = nlp_(text)
+        out.extend(
+            extract_constraints_from_doc(
+                doc,
+                clause_id=cid,
+                mapper_model=mapper_model,
+                mapper_threshold=mapper_threshold,
+            )
+        )
+    return out
