@@ -80,52 +80,42 @@ def resolve_preference(nlp: NLPResult) -> ResolvedPreference:
     attached_constraints = 0
     unattached_constraints = 0
 
-    # 1) Resolve clause-local attachment
     clause_ids = sorted(set(mentions_by_clause.keys()) | set(constraints_by_clause.keys()) | set(clauses_by_id.keys()))
     for clause_id in clause_ids:
         clause_mentions = mentions_by_clause.get(clause_id, [])
         clause_constraints = constraints_by_clause.get(clause_id, [])
 
+        # 0) Always keep explicit targets (even if attachment is ambiguous)
+        likes = [m for m in clause_mentions if m.polarity == Polarity.LIKE]
+        dislikes = [m for m in clause_mentions if m.polarity == Polarity.DISLIKE]
+        neutrals = [m for m in clause_mentions if m.polarity not in (Polarity.LIKE, Polarity.DISLIKE)]
+
+        for m in likes:
+            _upsert_target(liked_targets, m, constraints=())
+        for m in dislikes:
+            _upsert_target(disliked_targets, m, constraints=())
+
+        # If no mentions at all, keep constraints global
         if not clause_mentions and clause_constraints:
-            # No target candidates: keep constraints global
             for c in clause_constraints:
                 global_constraints.append(ResolvedConstraint(c))
                 unattached_constraints += 1
             continue
 
-        # Split mentions by polarity first (deterministic)
-        likes = [m for m in clause_mentions if m.polarity == Polarity.LIKE]
-        dislikes = [m for m in clause_mentions if m.polarity == Polarity.DISLIKE]
-        neutrals = [m for m in clause_mentions if m.polarity not in (Polarity.LIKE, Polarity.DISLIKE)]
-
-        # Pick a single "primary" mention per polarity bucket for safe attachment
+        # 1) Choose a single safe attachment target (only affects scoping)
         like_primary = _pick_primary_target(likes) or _pick_primary_target(neutrals)
         dislike_primary = _pick_primary_target(dislikes)
 
-        # Attach constraints only if we have exactly one plausible primary in the clause.
-        # If both like_primary and dislike_primary exist, prefer like_primary attachment
-        # and keep others global to avoid mis-scoping.
         if clause_constraints:
             attach_to = like_primary if like_primary is not None else dislike_primary
             if attach_to is not None:
-                # Attach all clause constraints to the chosen target (minimal v0)
-                # Scope refinement happens later (axis-based, connective-based, etc.)
-                _add_target_with_constraints(
-                    liked_targets if attach_to.polarity == Polarity.LIKE else disliked_targets,
-                    attach_to,
-                    clause_constraints,
-                )
+                bucket = liked_targets if attach_to.polarity == Polarity.LIKE else disliked_targets
+                _upsert_target(bucket, attach_to, constraints=tuple(clause_constraints))
                 attached_constraints += len(clause_constraints)
             else:
                 for c in clause_constraints:
                     global_constraints.append(ResolvedConstraint(c))
                     unattached_constraints += 1
-
-        # Ensure we also include targets even if no constraints were attached
-        if like_primary is not None and not _has_target(liked_targets, like_primary):
-            liked_targets.append(ResolvedTarget(mention=like_primary, constraints=()))
-        if dislike_primary is not None and not _has_target(disliked_targets, dislike_primary):
-            disliked_targets.append(ResolvedTarget(mention=dislike_primary, constraints=()))
 
     diagnostics: Dict[str, Any] = {
         "clauses": len(nlp.clauses),
@@ -205,3 +195,16 @@ def _add_target_with_constraints(
             bucket[i] = ResolvedTarget(mention=t.mention, constraints=merged)
             return
     bucket.append(ResolvedTarget(mention=mention, constraints=tuple(constraints)))
+
+def _upsert_target(bucket: List[ResolvedTarget], mention: Mention, constraints: Tuple[Constraint, ...]) -> None:
+    """
+    Does:
+        Insert or merge a target deterministically; merges constraints if target already exists.
+    """
+    for i, t in enumerate(bucket):
+        if t.mention.span == mention.span and t.mention.canonical == mention.canonical and t.mention.kind == mention.kind:
+            if constraints:
+                merged = tuple(list(t.constraints) + list(constraints))
+                bucket[i] = ResolvedTarget(mention=t.mention, constraints=merged)
+            return
+    bucket.append(ResolvedTarget(mention=mention, constraints=constraints))
