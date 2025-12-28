@@ -4,48 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Scripts/build_color_scoring_calibration.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Scripts/diag_color_clusters.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Scripts/eval_color_scenarios.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Scripts/fuse_small_clusters.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Scripts/recompute_prototypes_lab.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/models/color_scoring_config.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/color/preference_weights.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/io/assets.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/io/data_schema.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/build_pairwise_preference_dataset.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/train_preference_model.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/preference_resolver.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/schema.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/reco/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/reco/recommend.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/utils/optional_deps.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_constraints_adapter.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_preference_interpreter_contract.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_preference_resolver_smoke.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_scoring_invariants.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/pythonProject.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/pythonProject.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="commit new arborescence">
+      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Scripts/enrich_sephora_chip_colors.py" beforeDir="false" afterPath="$PROJECT_DIR$/Scripts/enrich_sephora_chip_colors.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Scripts/generator_color_ranking_golden.py" beforeDir="false" afterPath="$PROJECT_DIR$/Scripts/generator_color_ranking_golden.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Scripts/run_color_scenarios.py" beforeDir="false" afterPath="$PROJECT_DIR$/Scripts/run_color_scenarios.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Scripts/scrape_sephora_lipsticks_raw_items.py" beforeDir="false" afterPath="$PROJECT_DIR$/Scripts/scrape_sephora_lipsticks_raw_items.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pytest.ini" beforeDir="false" afterPath="$PROJECT_DIR$/pytest.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/color/cluster_colors.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/color/cluster_colors.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/color/enrich_dataset.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/color/enrich_dataset.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/color/scoring.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/color/scoring.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/ml/generate_queries_and_scores.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/generate_queries_and_scores.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/ml/train_ranker.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/train_ranker.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/ml/weak_labeling.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/ml/weak_labeling.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/goldens/color_ranking_goldens.json" beforeDir="false" afterPath="$PROJECT_DIR$/tests/goldens/color_ranking_goldens.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_color_ranking_goldens.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_color_ranking_goldens.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_preference_resolver_ambiguity.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_preference_resolver_ambiguity.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -65,23 +27,23 @@
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 1
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 1
+}</component>
   <component name="ProjectId" id="37TfOZamkKgOAmACVtLYOCYqH1P" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "git-widget-placeholder": "master",
-    "last_opened_file_path": "C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;
   }
-}]]></component>
+}</component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -98,6 +60,19 @@
       <option name="presentableId" value="Default" />
       <updated>1766931952143</updated>
     </task>
+    <task id="LOCAL-00001" summary="commit new arborescence">
+      <option name="closed" value="true" />
+      <created>1766935548075</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1766935548075</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="commit new arborescence" />
+    <option name="LAST_COMMIT_MESSAGE" value="commit new arborescence" />
   </component>
 </project>
