@@ -7,7 +7,7 @@ import spacy
 from spacy.tokens import Doc, Token
 
 from Shopping_assistant.nlp.axes.mapper import AxisMapper
-from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Strength
+from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Polarity, Strength
 
 
 # ---------------------------------------------------------------------
@@ -220,14 +220,18 @@ def extract_constraints_from_doc(
     doc: Doc,
     *,
     clause_id: int,
+    clause_polarity: Polarity = Polarity.UNKNOWN,
     blocked_lemmas: Optional[set[str]] = None,
     mapper_model: str = "all-MiniLM-L6-v2",
     mapper_threshold: float = 0.35,
 ) -> List[Constraint]:
-
     """
     Does:
         Extract constraints using spaCy dependency structure + transformer axis mapping fallback.
+
+    Notes:
+        We do NOT change the Constraint schema here; clause polarity is carried via meta
+        for downstream resolution/scoring.
     """
     out: List[Constraint] = []
 
@@ -273,7 +277,7 @@ def extract_constraints_from_doc(
                     "strength": strength.value,
                     "evidence_char_start": ev_start,
                     "evidence_char_end": ev_end,
-
+                    "clause_polarity": clause_polarity.value,
                 },
             )
         )
@@ -285,6 +289,7 @@ def extract_constraints_from_clause_text(
     clause_text: str,
     *,
     clause_id: int,
+    clause_polarity: Polarity = Polarity.UNKNOWN,
     blocked_lemmas: Optional[set[str]] = None,
     nlp: Optional[spacy.language.Language] = None,
     spacy_model: str = "en_core_web_sm",
@@ -296,16 +301,17 @@ def extract_constraints_from_clause_text(
     return extract_constraints_from_doc(
         doc,
         clause_id=clause_id,
+        clause_polarity=clause_polarity,
         blocked_lemmas=blocked_lemmas,
         mapper_model=mapper_model,
         mapper_threshold=mapper_threshold,
     )
 
 
-
 def extract_constraints(
     clauses: Iterable[Tuple[int, str]],
     *,
+    clause_polarities: Optional[Dict[int, Polarity]] = None,
     nlp: Optional[spacy.language.Language] = None,
     spacy_model: str = "en_core_web_sm",
     mapper_model: str = "all-MiniLM-L6-v2",
@@ -314,17 +320,31 @@ def extract_constraints(
     """
     Does:
         Extract constraints from multiple (clause_id, clause_text) pairs.
+
+    Args:
+        clause_polarities:
+            Optional mapping clause_id -> Polarity used to annotate constraints meta.
+            If not provided, all clauses default to UNKNOWN.
     """
     nlp_ = nlp or _load_spacy(spacy_model)
     out: List[Constraint] = []
     for cid, text in clauses:
         doc = nlp_(text)
+        pol = Polarity.UNKNOWN if clause_polarities is None else clause_polarities.get(cid, Polarity.UNKNOWN)
         out.extend(
             extract_constraints_from_doc(
                 doc,
                 clause_id=cid,
+                clause_polarity=pol,
                 mapper_model=mapper_model,
                 mapper_threshold=mapper_threshold,
             )
         )
     return out
+
+
+__all__ = [
+    "extract_constraints_from_doc",
+    "extract_constraints_from_clause_text",
+    "extract_constraints",
+]

@@ -4,10 +4,26 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="commit new arborescence">
-      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" afterDir="false" />
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="scoring_adapter">
+      <change afterPath="$PROJECT_DIR$/Scripts/reco_ab.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/conflicts.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_axis_merge_polarity.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_conflicts_resolution.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_reco_contract.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_scoring_adapter_levels.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_preference_resolver_ambiguity.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_preference_resolver_ambiguity.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Scripts/recompute_prototypes_lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/Scripts/recompute_prototypes_lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/color/scoring.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/color/scoring.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/clauses.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/clauses.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/polarity.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/polarity.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_merge.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_merge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_projection.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_projection.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_thresholds.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/axis_thresholds.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/reco/recommend.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/reco/recommend.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -35,15 +51,17 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Python.axis_thresholds.executor": "Run",
+    "Python.reco_ab.executor": "Run",
+    "RunOnceActivity.OpenProjectViewOnStart": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
   }
-}</component>
+}]]></component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -68,11 +86,20 @@
       <option name="project" value="LOCAL" />
       <updated>1766935548075</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="scoring_adapter">
+      <option name="closed" value="true" />
+      <created>1766938098991</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1766938098991</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="commit new arborescence" />
-    <option name="LAST_COMMIT_MESSAGE" value="commit new arborescence" />
+    <MESSAGE value="scoring_adapter" />
+    <option name="LAST_COMMIT_MESSAGE" value="scoring_adapter" />
   </component>
 </project>

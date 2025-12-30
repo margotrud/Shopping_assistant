@@ -1,12 +1,15 @@
 # src/Shopping_assistant/nlp/clauses.py
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING
 import logging
-log = logging.getLogger(__name__)
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, TypedDict
+
+from Shopping_assistant.nlp.schema import Clause, Polarity
 from Shopping_assistant.utils.optional_deps import require
-from Shopping_assistant.nlp.schema import Clause
+
+log = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from spacy.language import Language
     from spacy.tokens import Doc, Span, Token
@@ -429,6 +432,7 @@ def split_clauses_with_reasons(
 
     return out
 
+
 def chunks_to_clauses(chunks: List[ClauseChunk]) -> Tuple[Clause, ...]:
     out: List[Clause] = []
     for i, ch in enumerate(chunks):
@@ -442,11 +446,13 @@ def chunks_to_clauses(chunks: List[ClauseChunk]) -> Tuple[Clause, ...]:
             Clause(
                 clause_id=i,
                 text=text,
+                polarity=Polarity.UNKNOWN,
                 elliptical_neg=elliptical_neg,
                 reason=reason,
                 meta={"chunk": ch},
             )
         )
+
     return tuple(out)
 
 
@@ -457,13 +463,14 @@ def split_clauses(
     config: ClauseSplitConfig,
     debug: bool = False,
 ) -> Tuple[Clause, ...]:
-    chunks = split_clauses_with_reasons(
-        text, spacy_model=spacy_model, config=config, debug=debug
-    )
+    chunks = split_clauses_with_reasons(text, spacy_model=spacy_model, config=config, debug=debug)
     return chunks_to_clauses(chunks)
+
 
 __all__ = [
     "ClauseChunk",
     "ClauseSplitConfig",
     "split_clauses_with_reasons",
+    "chunks_to_clauses",
+    "split_clauses",
 ]

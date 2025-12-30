@@ -2,20 +2,24 @@
 from __future__ import annotations
 
 """
-Polarity classification for color mentions (LIKE / DISLIKE / None).
+Polarity classification for mentions (LIKE / DISLIKE / UNKNOWN).
 
 Design (portfolio / offline):
 - No paid APIs.
 - No lexical trigger rules.
 - Semantic inference implemented via SentenceTransformer embeddings.
 
-Contract:
+Contracts:
+
+1) Polarity backend (callback):
     polarity_fn(clause_text, mentions) -> {mention: "LIKE"|"DISLIKE"|None}
 
-This module only:
+2) This module:
 - normalizes returned labels,
 - applies optional clause-level fallback sentiment,
-- applies optional structural bias for elliptical fragments.
+- applies optional structural bias for elliptical fragments,
+- provides a deterministic clause-level polarity decision,
+- provides enum-typed outputs (Shopping_assistant.nlp.schema.Polarity).
 
 Important:
 - numpy and sentence_transformers are OPTIONAL dependencies and are only required
@@ -26,6 +30,7 @@ import logging
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Protocol
 
+from Shopping_assistant.nlp.schema import Polarity
 from Shopping_assistant.utils.optional_deps import require
 
 log = logging.getLogger(__name__)
@@ -61,6 +66,14 @@ def _norm_label(val: object) -> Optional[str]:
     return None
 
 
+def _label_to_enum(label: Optional[str]) -> Polarity:
+    if label == "LIKE":
+        return Polarity.LIKE
+    if label == "DISLIKE":
+        return Polarity.DISLIKE
+    return Polarity.UNKNOWN
+
+
 def _dedup_preserve_order(items: List[str]) -> List[str]:
     seen: set[str] = set()
     out: List[str] = []
@@ -83,6 +96,50 @@ def _l2_normalize_rows(np: Any, X: Any, *, eps: float = 1e-12) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Clause-level polarity decision
+# ---------------------------------------------------------------------------
+
+
+def decide_clause_polarity(
+    mention_labels: Dict[str, Optional[str]],
+    *,
+    clause_sentiment: Optional[str] = None,
+    elliptical_neg: bool = False,
+) -> Polarity:
+    """
+    Does:
+        Decide a clause-level polarity from mention-level labels + optional clause sentiment,
+        with a deterministic fallback for elliptical negative fragments.
+    """
+    if mention_labels:
+        vals = [_label_to_enum(v) for v in mention_labels.values() if v is not None]
+        has_like = any(v == Polarity.LIKE for v in vals)
+        has_dislike = any(v == Polarity.DISLIKE for v in vals)
+
+        # If only one side appears, it's the clause polarity.
+        if has_like and not has_dislike:
+            return Polarity.LIKE
+        if has_dislike and not has_like:
+            return Polarity.DISLIKE
+
+        # Mixed / ambiguous -> fall through.
+
+    # Clause sentiment fallback if provided (POS/NEG only)
+    if isinstance(clause_sentiment, str):
+        s = clause_sentiment.strip().upper()
+        if s == "POS":
+            return Polarity.LIKE
+        if s == "NEG":
+            return Polarity.DISLIKE
+
+    # Structural bias: elliptical neg fragments are treated as DISLIKE if still undecided
+    if elliptical_neg:
+        return Polarity.DISLIKE
+
+    return Polarity.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
 # Core polarity inference (callback + structural rules)
 # ---------------------------------------------------------------------------
 
@@ -95,6 +152,13 @@ def infer_polarity_for_mentions(
     clause_sentiment: Optional[str] = None,
     elliptical_neg: bool = False,
 ) -> Dict[str, Optional[str]]:
+    """
+    Does:
+        Run a backend polarity function and normalize/patch its outputs.
+
+    Returns:
+        Mapping mention -> "LIKE"|"DISLIKE"|None
+    """
     if not mentions:
         return {}
 
@@ -123,15 +187,42 @@ def infer_polarity_for_mentions(
         v_raw = raw_by_key.get(_canon_key(m))
         label = _norm_label(v_raw)
 
+        # Optional clause-level sentiment fallback if backend returns None
         if label is None and sent is not None:
             label = "LIKE" if sent == "POS" else "DISLIKE"
 
+        # Structural bias: elliptical fragments default to DISLIKE if still None
         if elliptical_neg and label is None:
             label = "DISLIKE"
 
         out[m] = label
 
     return out
+
+
+def infer_polarity_for_mentions_enum(
+    clause_text: str,
+    mentions: List[str],
+    *,
+    llm_polarity_fn: PolarityLLM,
+    clause_sentiment: Optional[str] = None,
+    elliptical_neg: bool = False,
+) -> Dict[str, Polarity]:
+    """
+    Does:
+        Same as infer_polarity_for_mentions(), but returns enum-typed polarities.
+
+    Returns:
+        Mapping mention -> Polarity (LIKE/DISLIKE/UNKNOWN)
+    """
+    raw = infer_polarity_for_mentions(
+        clause_text,
+        mentions,
+        llm_polarity_fn=llm_polarity_fn,
+        clause_sentiment=clause_sentiment,
+        elliptical_neg=elliptical_neg,
+    )
+    return {m: _label_to_enum(v) for m, v in raw.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -276,5 +367,7 @@ def make_free_polarity_fn(
 __all__ = [
     "PolarityLLM",
     "infer_polarity_for_mentions",
+    "infer_polarity_for_mentions_enum",
+    "decide_clause_polarity",
     "make_free_polarity_fn",
 ]

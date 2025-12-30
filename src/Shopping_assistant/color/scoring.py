@@ -11,7 +11,6 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-
 __all__ = [
     "Constraint",
     "QuerySpec",
@@ -22,10 +21,10 @@ __all__ = [
     "load_preference_weights",
 ]
 
-
 # ---------------------------------------------------------------------
 # Script/CLI defaults (NOT for library use)
 # ---------------------------------------------------------------------
+
 
 def _project_root_for_scripts_only() -> Path:
     # .../src/Shopping_assistant/color/scoring.py -> parents[3] = project root
@@ -73,9 +72,28 @@ def _default_preference_weights_for_scripts_only() -> Path:
     return _project_root_for_scripts_only() / "data" / "models" / "color_preference_weights.json"
 
 
+def _rgb_cols_to_hex(df: pd.DataFrame) -> pd.Series:
+    """
+    Convert columns r,g,b (0..255) into #RRGGBB.
+    """
+    r = df["r"].astype("Int64")
+    g = df["g"].astype("Int64")
+    b = df["b"].astype("Int64")
+    ok = r.notna() & g.notna() & b.notna()
+    hexs = pd.Series(pd.NA, index=df.index, dtype="string")
+    hexs.loc[ok] = (
+        "#"
+        + r.loc[ok].astype(int).map(lambda x: f"{x:02X}")
+        + g.loc[ok].astype(int).map(lambda x: f"{x:02X}")
+        + b.loc[ok].astype(int).map(lambda x: f"{x:02X}")
+    )
+    return hexs
+
+
 # ---------------------------------------------------------------------
 # Pure loaders (explicit paths only)
 # ---------------------------------------------------------------------
+
 
 def load_scoring_calibration(path: str | Path) -> dict:
     cal_path = Path(path)
@@ -133,7 +151,8 @@ _LEVEL_TO_Q = {
 class Constraint:
     dim: str
     op: str
-    level: str
+    level: str | None = None         # low|medium|high|very_high
+    cutpoint: float | None = None    # numeric threshold (preferred when provided)
     weight: float = 1.0
 
 
@@ -144,6 +163,7 @@ class QuerySpec:
 
 
 # --- NLP -> scoring constraint adapter ---------------------------------
+
 
 def _nlp_axis_to_dim(axis: str) -> str | None:
     # Map NLP axes to calibrated scoring dims (must exist in _ALLOWED_DIMS + calibration thresholds)
@@ -166,8 +186,6 @@ def _nlp_strength_to_level(direction: str, strength: str) -> str:
     strength: 'weak'|'med'|'strong'
     Output: 'low'|'medium'|'high'|'very_high'
     """
-    # Interpretation: for LOWER, strong means "cap earlier" (more restrictive) => medium
-    # for RAISE, strong means "require more" => high
     if direction == "lower":
         return {"strong": "medium", "med": "high", "weak": "very_high"}.get(strength, "high")
     return {"strong": "high", "med": "medium", "weak": "low"}.get(strength, "medium")
@@ -175,7 +193,6 @@ def _nlp_strength_to_level(direction: str, strength: str) -> str:
 
 def _nlp_strength_to_weight(strength: str, *, soft_weight: float) -> float:
     base = {"weak": 0.5, "med": 0.8, "strong": 1.0}.get(strength, 0.8)
-    # Treat strong as HARD; downweight non-strong as SOFT
     if str(strength) != "strong":
         return base * float(soft_weight)
     return base
@@ -207,13 +224,14 @@ def constraints_from_nlp(
         level = _nlp_strength_to_level(str(direction), str(strength))
         weight = _nlp_strength_to_weight(str(strength), soft_weight=float(soft_weight))
 
-        out.append(Constraint(dim=dim, op=op, level=level, weight=weight))
+        out.append(Constraint(dim=dim, op=op, level=level, cutpoint=None, weight=weight))
     return tuple(out)
 
 
 # ---------------------------------------------------------------------
 # Public API (stable wrapper)
 # ---------------------------------------------------------------------
+
 
 def _split_constraints_blob(constraints: str) -> List[str]:
     """Split scenario constraint blob into tokens (semicolon separated)."""
@@ -327,6 +345,7 @@ def _mix_prototype_rows(
 # Validation helpers
 # ---------------------------------------------------------------------
 
+
 def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
@@ -336,10 +355,14 @@ def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str) -> None:
 def _check_constraint(c: Constraint) -> None:
     if c.dim not in _ALLOWED_DIMS:
         raise ValueError(f"Unknown dim '{c.dim}'.")
-    if c.op not in {"<=", ">="}:
+    if c.op not in _ALLOWED_OPS:
         raise ValueError(f"Unknown op '{c.op}'.")
-    if c.level not in _LEVEL_TO_Q:
-        raise ValueError(f"Unknown level '{c.level}'.")
+    if c.cutpoint is None:
+        if c.level not in _LEVEL_TO_Q:
+            raise ValueError(f"Unknown level '{c.level}'.")
+    else:
+        if not np.isfinite(c.cutpoint):
+            raise ValueError(f"Invalid cutpoint '{c.cutpoint}'.")
     if not np.isfinite(c.weight) or c.weight < 0:
         raise ValueError(f"Invalid weight '{c.weight}'.")
 
@@ -347,6 +370,7 @@ def _check_constraint(c: Constraint) -> None:
 # ---------------------------------------------------------------------
 # Cluster id injection
 # ---------------------------------------------------------------------
+
 
 def _ensure_cluster_id(
     df: pd.DataFrame,
@@ -360,7 +384,6 @@ def _ensure_cluster_id(
         asg = pd.read_csv(assignments_path)
         key_cols = [c for c in ("product_id", "shade_id") if c in df.columns and c in asg.columns]
         if key_cols and "cluster_id" in asg.columns:
-            # Ensure merge key dtypes match (pandas merge requires identical dtypes)
             for k in key_cols:
                 df[k] = df[k].astype(str)
                 asg[k] = asg[k].astype(str)
@@ -386,6 +409,7 @@ def _ensure_cluster_id(
 # Color distance (ΔE CIE76) + normalization
 # ---------------------------------------------------------------------
 
+
 def _delta_e_to_proto(work: pd.DataFrame, proto_row: pd.Series) -> np.ndarray:
     dL = work["L_lab"].to_numpy(float) - float(proto_row["L_lab"])
     da = work["a_lab"].to_numpy(float) - float(proto_row["a_lab"])
@@ -402,6 +426,7 @@ def _delta_e_norm(deltaE: np.ndarray, cal: dict) -> np.ndarray:
 # Constraints (fixed thresholds + normalized penalties)
 # ---------------------------------------------------------------------
 
+
 def _constraint_threshold_fixed(cal: dict, dim: str, level: str) -> float:
     try:
         return float(cal["thresholds"][dim][level])
@@ -412,7 +437,6 @@ def _constraint_threshold_fixed(cal: dict, dim: str, level: str) -> float:
 
 
 def _constraint_scale(cal: dict, dim: str) -> float:
-    # Prefer IQR; fallback to std; else 1.0 (but this should be rare and visible)
     iqr = float(cal["scale_iqr"].get(dim, float("nan")))
     if np.isfinite(iqr) and iqr > 1e-12:
         return iqr
@@ -428,6 +452,16 @@ def _constraint_penalty(values: np.ndarray, op: str, threshold: float) -> np.nda
     return np.maximum(0.0, threshold - values)
 
 
+def _constraint_suffix(c: Constraint) -> str:
+    """
+    Stable string suffix for penalty column names.
+    """
+    if c.cutpoint is not None:
+        # keep it compact but stable enough for debugging
+        return f"{float(c.cutpoint):.6g}"
+    return str(c.level)
+
+
 def _apply_constraints(
     work: pd.DataFrame,
     constraints: Tuple[Constraint, ...],
@@ -439,31 +473,178 @@ def _apply_constraints(
         return z, pd.DataFrame(index=work.index), pd.DataFrame(index=work.index)
 
     total = np.zeros(len(work), float)
-    breakdown = {}
-    extras = {}
+    breakdown: dict[str, np.ndarray] = {}
+    extras: dict[str, np.ndarray] = {}
 
     for i, c in enumerate(constraints, 1):
         _check_constraint(c)
         if c.dim not in work.columns:
             raise KeyError(f"Constraint dim '{c.dim}' missing from work df columns.")
-        thr = _constraint_threshold_fixed(calibration, c.dim, c.level)
+
+        thr = float(c.cutpoint) if c.cutpoint is not None else _constraint_threshold_fixed(
+            calibration, c.dim, c.level  # type: ignore[arg-type]
+        )
         scale = _constraint_scale(calibration, c.dim)
 
         vals = work[c.dim].to_numpy(float)
         gap = _constraint_penalty(vals, c.op, thr)
         gap_norm = gap / scale
 
-        pen = c.weight * gap_norm
+        pen = float(c.weight) * gap_norm
         total += pen
-        breakdown[f"penalty_{i}__{c.dim}{c.op}{c.level}"] = pen
+
+        breakdown[f"penalty_{i}__{c.dim}{c.op}{_constraint_suffix(c)}"] = pen
         extras[f"c{i}__{c.dim}"] = vals
 
     return total, pd.DataFrame(breakdown, index=work.index), pd.DataFrame(extras, index=work.index)
 
 
+def _constraint_threshold(calibration: dict, c: Constraint) -> float:
+    if c.cutpoint is not None:
+        return float(c.cutpoint)
+    return _constraint_threshold_fixed(calibration, c.dim, c.level)  # type: ignore[arg-type]
+
+
+def _satisfy_mask(work: pd.DataFrame, c: Constraint, thr: float) -> np.ndarray:
+    vals = work[c.dim].to_numpy(float)
+    if c.op == "<=":
+        return vals <= float(thr)
+    return vals >= float(thr)
+
+
+def _calib_bounds_for_dim(calibration: dict, *, dim: str) -> tuple[float | None, float | None]:
+    """
+    Does:
+        Return (min_level_value, max_level_value) from calibration thresholds for a dim.
+        Used to clamp numeric cutpoint relaxation so it cannot drift beyond calibrated range.
+    """
+    ths = calibration.get("thresholds", {}).get(dim)
+    if not isinstance(ths, dict) or not ths:
+        return None, None
+    vals = []
+    for _, v in ths.items():
+        try:
+            vv = float(v)
+            if np.isfinite(vv):
+                vals.append(vv)
+        except Exception:
+            continue
+    if not vals:
+        return None, None
+    return float(min(vals)), float(max(vals))
+
+
+def _snap_numeric_cutpoints_to_joint_feasibility(
+    work: pd.DataFrame,
+    constraints: Tuple[Constraint, ...],
+    *,
+    calibration: dict,
+    min_feasible_frac: float = 0.05,  # ✅ was 0.10 (too aggressive on small pools)
+    max_iter: int = 12,
+    clamp_to_calibration: bool = True,  # ✅ prevents sat_eff blow-ups (e.g., 1.9+) when very_high≈1.53
+) -> Tuple[Constraint, ...]:
+    """
+    Does:
+        Make the *conjunction* (AND) of constraints feasible in the candidate pool by relaxing
+        ONLY numeric cutpoints (c.cutpoint is not None), and doing it *jointly*.
+
+    Key changes:
+        - Default min_feasible_frac lowered to 0.05 to reduce forced relaxation.
+        - Optional clamping of numeric cutpoints within calibrated min/max per dim to avoid
+          drifting beyond the semantics of low/medium/high/very_high.
+    """
+    if not constraints:
+        return constraints
+
+    mf = float(min_feasible_frac)
+    if not (0.0 < mf < 0.5):
+        return constraints
+
+    any_numeric = any(c.cutpoint is not None for c in constraints)
+    if not any_numeric:
+        return constraints
+
+    thr_map: List[float] = [_constraint_threshold(calibration, c) for c in constraints]
+
+    def mask_all_current(except_idx: int | None = None) -> np.ndarray:
+        m = np.ones(len(work), dtype=bool)
+        for j, c in enumerate(constraints):
+            if except_idx is not None and j == except_idx:
+                continue
+            if c.dim not in work.columns:
+                continue
+            m &= _satisfy_mask(work, c, thr_map[j])
+        return m
+
+    m0 = mask_all_current()
+    if float(m0.mean()) >= mf:
+        return constraints
+
+    bounds_cache: dict[str, tuple[float | None, float | None]] = {}
+
+    for _ in range(int(max_iter)):
+        m_all = mask_all_current()
+        if float(m_all.mean()) >= mf:
+            break
+
+        changed = False
+
+        for i, c in enumerate(constraints):
+            if c.cutpoint is None:
+                continue
+            if c.dim not in work.columns:
+                continue
+
+            m_other = mask_all_current(except_idx=i)
+            if not m_other.any():
+                m_other = np.ones(len(work), dtype=bool)
+
+            vals = work.loc[m_other, c.dim].to_numpy(float)
+            if len(vals) == 0:
+                continue
+
+            cur = float(thr_map[i])
+
+            if c.op == "<=":
+                target = float(np.quantile(vals, mf))
+                new_thr = max(cur, target)  # relax upwards
+            elif c.op == ">=":
+                target = float(np.quantile(vals, 1.0 - mf))
+                new_thr = min(cur, target)  # relax downwards
+            else:
+                continue
+
+            if clamp_to_calibration:
+                if c.dim not in bounds_cache:
+                    bounds_cache[c.dim] = _calib_bounds_for_dim(calibration, dim=c.dim)
+                lo, hi = bounds_cache[c.dim]
+                # For "<=" (caps): never relax above calibrated max (typically very_high).
+                # For ">=" (floors): never relax below calibrated min (typically low).
+                if c.op == "<=" and hi is not None and np.isfinite(hi):
+                    new_thr = min(float(new_thr), float(hi))
+                if c.op == ">=" and lo is not None and np.isfinite(lo):
+                    new_thr = max(float(new_thr), float(lo))
+
+            if np.isfinite(new_thr) and abs(float(new_thr) - cur) > 1e-12:
+                thr_map[i] = float(new_thr)
+                changed = True
+
+        if not changed:
+            break
+
+    out: List[Constraint] = []
+    for i, c in enumerate(constraints):
+        if c.cutpoint is None:
+            out.append(c)
+        else:
+            out.append(Constraint(dim=c.dim, op=c.op, level=c.level, cutpoint=float(thr_map[i]), weight=c.weight))
+    return tuple(out)
+
+
 # ---------------------------------------------------------------------
 # Scoring (CORE) - no implicit disk access
 # ---------------------------------------------------------------------
+
 
 def score_shades(
     df: pd.DataFrame,
@@ -475,6 +656,8 @@ def score_shades(
     proto_row_override: Optional[pd.Series] = None,
     calibration: dict | None = None,
     preference_weights: Optional[dict[str, float]] = None,
+    joint_min_feasible_frac: float = 0.05,  # ✅ exposed knob (default lowered)
+    joint_clamp_to_calibration: bool = True,  # ✅ prevents sat_eff drifting beyond calibrated range
 ) -> pd.DataFrame:
     """
     CORE scoring function.
@@ -510,10 +693,29 @@ def score_shades(
     deltaE = _delta_e_to_proto(work, proto_row)
     deltaE_n = _delta_e_norm(deltaE, calibration)
 
-    total_penalty_n, penalty_df, extras_df = _apply_constraints(
-        work, query.constraints, calibration=calibration
+    # ✅ JOINT feasibility: avoid empty intersection of constraints.
+    constraints_eff = _snap_numeric_cutpoints_to_joint_feasibility(
+        work,
+        query.constraints,
+        calibration=calibration,
+        min_feasible_frac=float(joint_min_feasible_frac),
+        max_iter=12,
+        clamp_to_calibration=bool(joint_clamp_to_calibration),
     )
 
+    total_penalty_n, penalty_df, extras_df = _apply_constraints(
+        work, constraints_eff, calibration=calibration
+    )
+
+    # -----------------------------
+    # Preference term (FIXED)
+    # -----------------------------
+    # Old behavior (incorrect):
+    #   preference_score was a SIGNED linear combination of signed deltas, which can reward moving away
+    #   from the prototype depending on the sign of weights.
+    #
+    # New behavior:
+    #   preference_score is NEGATIVE distance-like (0 is best), so higher is better when multiplied by lambda_preference.
     if float(lambda_preference) != 0.0:
         if preference_weights is None:
             raise ValueError(
@@ -525,7 +727,6 @@ def score_shades(
         if "C_lab" not in proto_row.index or "H_lab_deg" not in proto_row.index:
             raise KeyError("proto_row missing required preference columns: ['C_lab', 'H_lab_deg']")
 
-        # normalized deltas
         std_L = _constraint_scale(calibration, "L_lab")
         std_C = _constraint_scale(calibration, "C_lab")
 
@@ -534,11 +735,12 @@ def score_shades(
         dH = (work["H_lab_deg"].to_numpy(float) - float(proto_row["H_lab_deg"]) + 180.0) % 360.0 - 180.0
         dH = dH / 180.0
 
-        preference_score = (
-            float(preference_weights["w_L"]) * dL
-            + float(preference_weights["w_C"]) * dC
-            + float(preference_weights["w_H"]) * dH
-        )
+        wL = abs(float(preference_weights["w_L"]))
+        wC = abs(float(preference_weights["w_C"]))
+        wH = abs(float(preference_weights["w_H"]))
+
+        pref_dist = (wL * np.abs(dL)) + (wC * np.abs(dC)) + (wH * np.abs(dH))
+        preference_score = -pref_dist
     else:
         preference_score = 0.0
 
@@ -548,6 +750,12 @@ def score_shades(
         - float(lambda_constraints) * total_penalty_n
     )
 
+    chip_hex_out = None
+    if "chip_hex" in work.columns:
+        chip_hex_out = work["chip_hex"].astype("string")
+    elif {"r", "g", "b"}.issubset(work.columns):
+        chip_hex_out = _rgb_cols_to_hex(work)
+
     out = pd.DataFrame(
         {
             "product_id": work["product_id"].astype(str),
@@ -556,6 +764,12 @@ def score_shades(
             "product_name": work["product_name"].astype(str),
             "shade_name": work["shade_name"].astype(str),
             "url": work["url"].astype(str),
+
+            "chip_hex": chip_hex_out if chip_hex_out is not None else pd.NA,
+            "r": work["r"].astype("Int64") if "r" in work.columns else pd.NA,
+            "g": work["g"].astype("Int64") if "g" in work.columns else pd.NA,
+            "b": work["b"].astype("Int64") if "b" in work.columns else pd.NA,
+
             "cluster_id": work["cluster_id"].astype("Int64") if "cluster_id" in work.columns else pd.NA,
             "deltaE": deltaE,
             "deltaE_norm": deltaE_n,
@@ -581,6 +795,7 @@ def score_shades(
 # Script-friendly wrapper (explicit paths; defaults only for scripts)
 # ---------------------------------------------------------------------
 
+
 def score_inventory(
     *,
     inventory: pd.DataFrame,
@@ -589,23 +804,16 @@ def score_inventory(
     cluster_id: int,
     constraints: str = "",
     lambda_constraints: float = 1.0,
-    # IMPORTANT: keep default 0.0 for deterministic goldens unless explicitly enabled
     lambda_preference: float = 0.0,
     calibration_path: Optional[str | Path] = None,
     preference_weights_path: Optional[str | Path] = None,
 ) -> pd.DataFrame:
     """
     Script/test-friendly entrypoint.
-
-    Notes:
-      - Still allows script defaults, but they are confined here (NOT in score_shades).
-      - For runtime use, prefer calling score_shades with injected assets.
     """
-    # Calibration is mandatory; allow script default here only.
     cal_path = Path(calibration_path) if calibration_path is not None else _default_calibration_for_scripts_only()
     cal = load_scoring_calibration(cal_path)
 
-    # auto-pick defaults (prefer fused) - script only
     asg_path = Path(assignments_path) if assignments_path is not None else _default_assignments_for_scripts_only()
 
     if prototypes is None:
@@ -657,7 +865,7 @@ def score_inventory(
 # ---------------------------------------------------------------------
 
 _CONSTRAINT_RE = re.compile(
-    r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*(low|medium|high|very_high)\s*:\s*([0-9]*\.?[0-9]+)\s*$"
+    r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*((?:low|medium|high|very_high)|(?:[0-9]*\.?[0-9]+))\s*:\s*([0-9]*\.?[0-9]+)\s*$"
 )
 
 
@@ -666,8 +874,16 @@ def _parse_constraint(s: str) -> Constraint:
     m = _CONSTRAINT_RE.match(raw)
     if not m:
         raise ValueError(f"Invalid constraint '{raw}'.")
-    dim, op, level, w_str = m.groups()
-    c = Constraint(dim=dim, op=op, level=level, weight=float(w_str))
+    dim, op, lvl_or_num, w_str = m.groups()
+
+    level = None
+    cutpoint = None
+    if lvl_or_num in {"low", "medium", "high", "very_high"}:
+        level = lvl_or_num
+    else:
+        cutpoint = float(lvl_or_num)
+
+    c = Constraint(dim=str(dim), op=str(op), level=level, cutpoint=cutpoint, weight=float(w_str))
     _check_constraint(c)
     return c
 
