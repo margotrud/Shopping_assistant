@@ -4,8 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="refactor(nlp): unify spaCy runtime with explicit injection&#10;&#10;- Load spaCy once per request and reuse across NLP pipeline&#10;- Inject nlp into clause splitting and constraint extraction&#10;- Remove implicit spaCy loading from parsing modules&#10;- Improve determinism and performance&#10;- All tests passing">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="git status&#10;git add src/Shopping_assistant/nlp/llm/analyze_clauses.py&#10;git commit -m &quot;refactor(nlp): clean analyze_clauses and world alias index&quot;">
       <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/llm/analyze_clauses.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/llm/analyze_clauses.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -93,7 +92,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767176980204</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="git status&#10;git add src/Shopping_assistant/nlp/llm/analyze_clauses.py&#10;git commit -m &quot;refactor(nlp): clean analyze_clauses and world alias index&quot;">
+      <option name="closed" value="true" />
+      <created>1767177784209</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1767177784209</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -101,6 +108,7 @@
     <MESSAGE value="scoring_adapter" />
     <MESSAGE value="fix(nlp): fallback level snapping when calibration is missing&#10;&#10;- Add deterministic [0,1] fallback cutpoints for light_hsl, sat_hsl, depth, colorfulness&#10;- Keep sat_eff calibration-only to avoid invalid snapping&#10;- Ensure constraints blob is emitted for single-sided thresholds (e.g. BRIGHTNESS cap)&#10;- All tests passing" />
     <MESSAGE value="refactor(nlp): unify spaCy runtime with explicit injection&#10;&#10;- Load spaCy once per request and reuse across NLP pipeline&#10;- Inject nlp into clause splitting and constraint extraction&#10;- Remove implicit spaCy loading from parsing modules&#10;- Improve determinism and performance&#10;- All tests passing" />
-    <option name="LAST_COMMIT_MESSAGE" value="refactor(nlp): unify spaCy runtime with explicit injection&#10;&#10;- Load spaCy once per request and reuse across NLP pipeline&#10;- Inject nlp into clause splitting and constraint extraction&#10;- Remove implicit spaCy loading from parsing modules&#10;- Improve determinism and performance&#10;- All tests passing" />
+    <MESSAGE value="git status&#10;git add src/Shopping_assistant/nlp/llm/analyze_clauses.py&#10;git commit -m &quot;refactor(nlp): clean analyze_clauses and world alias index&quot;" />
+    <option name="LAST_COMMIT_MESSAGE" value="git status&#10;git add src/Shopping_assistant/nlp/llm/analyze_clauses.py&#10;git commit -m &quot;refactor(nlp): clean analyze_clauses and world alias index&quot;" />
   </component>
 </project>

@@ -161,18 +161,33 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
     Does:
         Build a minimal evidence span around the token:
         - token itself
-        - neg child ("not")
+        - neg child ("not") if attached to tok
         - directional/cap degree advmods: {too, more, less}
+        - also include "not" when it modifies the degree advmod (e.g. "not too neon")
     """
     keep_adv = {"too", "more", "less"}
 
     toks = [tok]
+
+    # 1) direct children signals
+    advmods: List[Token] = []
     for ch in tok.children:
         if ch.dep_ == "neg":
             toks.append(ch)
         elif ch.dep_ == "advmod" and ch.pos_ == "ADV" and ch.lemma_.lower() in keep_adv:
             toks.append(ch)
+            advmods.append(ch)
 
+    # 2) handle pattern: "not" attached to the advmod (common in "not too X")
+    doc = tok.doc
+    for adv in advmods:
+        j = adv.i - 1
+        if j >= 0:
+            left = doc[j]
+            if left.lemma_.lower() == "not":
+                toks.append(left)
+
+    # 3) final normalize + span
     toks = sorted({t.i: t for t in toks}.values(), key=lambda t: t.i)
 
     start = toks[0].idx

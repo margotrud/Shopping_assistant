@@ -54,6 +54,66 @@ def _norm(s: str) -> str:
     """
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in s).split())
 
+def _token_freq_over_aliases(aliases: Iterable[str]) -> Dict[str, int]:
+    freq: Dict[str, int] = {}
+    for a in aliases:
+        toks = a.split()
+        for t in toks:
+            if not t:
+                continue
+            freq[t] = freq.get(t, 0) + 1
+    return freq
+
+
+def _build_xkcd_single_token_allowset(
+    *,
+    css_aliases: set[str],
+    xkcd_aliases: set[str],
+) -> set[str]:
+    """
+    Does:
+        Build a dynamic allowlist for single-token XKCD aliases.
+
+    Rules (dynamic, data-derived):
+        - Always allow if the exact alias is also a CSS alias (CSS acts as anchor).
+        - Otherwise, allow if the token appears frequently inside multi-token color aliases
+          (signal that it behaves like a color descriptor/token, not a random noun).
+    """
+    # Multi-token aliases are where the "color vocabulary" lives.
+    xkcd_multi = {a for a in xkcd_aliases if " " in a}
+    css_multi = {a for a in css_aliases if " " in a}
+
+    # Token frequencies inside multi-token aliases
+    freq = _token_freq_over_aliases(xkcd_multi | css_multi)
+
+    # Compute a dynamic threshold: keep tokens that are common enough in the alias universe.
+    # Use a percentile-ish heuristic without numpy:
+    vals = sorted(freq.values())
+    if not vals:
+        return set()
+
+    # threshold = max(3, median) -> conservative but fully data-driven
+    med = vals[len(vals) // 2]
+    thr = max(3, int(med))
+
+    allow: set[str] = set()
+
+    # Single-token XKCD aliases
+    for a in xkcd_aliases:
+        if " " in a:
+            continue
+        t = a
+        if not t or len(t) < 3:
+            continue
+
+        if t in css_aliases:
+            allow.add(t)
+            continue
+
+        if freq.get(t, 0) >= thr:
+            allow.add(t)
+
+    return allow
 
 # ---------------------------------------------------------------------------
 # World alias index (CSS + XKCD), dependency-driven
@@ -108,35 +168,60 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
 
     Returns:
         Mapping alias -> {name, hex, source, ...}
+
+    Important:
+        XKCD single-token aliases are filtered dynamically to reduce false positives.
+        No static word lists are used.
     """
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color inventory")
     idx: Dict[str, Dict[str, Any]] = {}
 
-    # CSS names -> hex
+    css_aliases: set[str] = set()
     for name in _iter_css_color_names():
         alias = _norm_alias(name)
         if not alias:
             continue
+        css_aliases.add(alias)
+
         try:
             hx = webcolors.name_to_hex(name)
         except Exception:
-            # Some versions may not resolve every alias reliably
             hx = None
+
         info: Dict[str, Any] = {"name": alias, "source": "css"}
         if hx:
             info["hex"] = hx
         idx[alias] = info
 
-    # XKCD names -> hex
     if include_xkcd:
-        for raw_name, hx in _iter_xkcd_color_items():
+        xkcd_items = list(_iter_xkcd_color_items())
+        xkcd_aliases: set[str] = set()
+
+        for raw_name, _hx in xkcd_items:
+            alias = _norm_alias(raw_name)
+            if alias:
+                xkcd_aliases.add(alias)
+
+        xkcd_single_allow = _build_xkcd_single_token_allowset(
+            css_aliases=css_aliases,
+            xkcd_aliases=xkcd_aliases,
+        )
+
+        for raw_name, hx in xkcd_items:
             alias = _norm_alias(raw_name)
             if not alias:
                 continue
+
+            # multi-token XKCD => keep
+            if " " not in alias:
+                # single-token XKCD => keep only if dynamically allowed
+                if alias not in xkcd_single_allow:
+                    continue
+
+            # XKCD may override CSS for the same alias; keep source for tie-breaking later
             idx[alias] = {"name": alias, "hex": hx, "source": "xkcd"}
 
     return idx
-
 
 def _max_ngram_from_index(color_index: Dict[str, Dict[str, Any]]) -> int:
     if not color_index:
