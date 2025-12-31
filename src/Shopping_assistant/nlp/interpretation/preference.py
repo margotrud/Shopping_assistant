@@ -129,6 +129,8 @@ def interpret_nlp(
     clauses_out: List[Clause] = []
 
     diagnostics: Dict[str, Any] = {}
+    trace: Optional[Dict[str, Any]] = None
+
     if debug:
         diagnostics["clauses"] = [
             {
@@ -143,6 +145,18 @@ def interpret_nlp(
         ]
         diagnostics["mentions"] = []
         diagnostics["constraints"] = []
+
+        # Minimal, stable debug artifact for downstream calibration / inspection.
+        trace = {
+            "input_text": text,
+            "spacy_model": spacy_model,
+            "include_xkcd": include_xkcd,
+            "clauses": [],
+            "mentions": [],
+            "constraints_raw": [],
+            "constraints_final": [],
+            "conflicts": None,
+        }
 
     for cl in clauses_in:
         clause_text = (cl.text or "").strip()
@@ -178,6 +192,17 @@ def interpret_nlp(
         )
         clauses_out.append(replace(cl, polarity=cl_polarity))
 
+        if debug and isinstance(trace, dict):
+            trace["clauses"].append(
+                {
+                    "clause_id": cl.clause_id,
+                    "text": clause_text,
+                    "elliptical_neg": bool(cl.elliptical_neg),
+                    "polarity": cl_polarity.value,
+                    "offset": int(clause_offset),
+                }
+            )
+
         for m in mention_dicts:
             if not isinstance(m, dict):
                 continue
@@ -204,6 +229,19 @@ def interpret_nlp(
 
             all_mentions.append(mention_obj)
 
+            if debug and isinstance(trace, dict):
+                trace["mentions"].append(
+                    {
+                        "clause_id": mention_obj.clause_id,
+                        "canonical": mention_obj.canonical,
+                        "raw": mention_obj.raw,
+                        "polarity": mention_obj.polarity.value,
+                        "confidence": float(mention_obj.confidence),
+                        "span": {"start": int(mention_obj.span.start), "end": int(mention_obj.span.end)},
+                        "meta": mention_obj.meta,
+                    }
+                )
+
         # -----------------------------
         # Constraints
         # -----------------------------
@@ -222,7 +260,22 @@ def interpret_nlp(
             if isinstance(s, int) and isinstance(e, int):
                 meta["evidence_global_start"] = s + clause_offset
                 meta["evidence_global_end"] = e + clause_offset
-            all_constraints.append(replace(c, meta=meta))
+
+            c2 = replace(c, meta=meta)
+            all_constraints.append(c2)
+
+            if debug and isinstance(trace, dict):
+                trace["constraints_raw"].append(
+                    {
+                        "clause_id": c2.clause_id,
+                        "axis": c2.axis.value,
+                        "direction": c2.direction.value,
+                        "strength": c2.strength.value,
+                        "confidence": float(getattr(c2, "confidence", 0.0) or 0.0),
+                        "evidence": c2.evidence,
+                        "meta": c2.meta,
+                    }
+                )
 
         if debug:
             diagnostics["mentions"].extend(
@@ -291,12 +344,28 @@ def interpret_nlp(
             ),
         )
 
+    if debug and isinstance(trace, dict):
+        trace["conflicts"] = conflicts_diag
+        trace["constraints_final"] = [
+            {
+                "clause_id": c.clause_id,
+                "axis": c.axis.value,
+                "direction": c.direction.value,
+                "strength": c.strength.value,
+                "confidence": float(getattr(c, "confidence", 0.0) or 0.0),
+                "evidence": c.evidence,
+                "meta": c.meta,
+            }
+            for c in constraints_sorted
+        ]
+
     return NLPResult(
         text=text,
         clauses=tuple(clauses_out) if clauses_out else tuple(clauses_in),
         mentions=mentions_sorted,
         constraints=constraints_sorted,
         diagnostics=diagnostics,
+        trace=trace,
     )
 
 
@@ -321,6 +390,7 @@ def interpret_preference_text(
         "mentions": [m.__dict__ for m in res.mentions],
         "constraints": [c.__dict__ for c in res.constraints],
         "diagnostics": res.diagnostics,
+        "trace": res.trace,
     }
 
 

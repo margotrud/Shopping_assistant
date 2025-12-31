@@ -122,6 +122,7 @@ class NLPResult:
     mentions: Tuple[Mention, ...] = ()
     constraints: Tuple[Constraint, ...] = ()
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    trace: Optional[Dict[str, Any]] = None
 
     def mentions_by_polarity(self, polarity: Polarity) -> Tuple[Mention, ...]:
         return tuple(m for m in self.mentions if m.polarity == polarity)

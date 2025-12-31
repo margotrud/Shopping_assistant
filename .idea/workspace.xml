@@ -4,8 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="&quot;refactor(nlp): stabilize output ordering for mentions and constraints&quot;">
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="&quot;refactor(nlp): enforce constraint contract (fail-fast in debug)&quot;">
+      <change afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/axes/predictor.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/axes/mapper.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -116,7 +121,31 @@
       <option name="project" value="LOCAL" />
       <updated>1767178694645</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="refactor(nlp): centralize spaCy runtime loader&#10;&#10;- Add shared cached spaCy loader in nlp/runtime&#10;- Remove duplicated per-module _load_spacy implementations&#10;- Keep explicit nlp injection and single-load behavior&#10;- Tests passing">
+      <option name="closed" value="true" />
+      <created>1767178979967</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1767178979967</updated>
+    </task>
+    <task id="LOCAL-00009" summary="fix(nlp): use Direction.RAISE in constraint normalizer">
+      <option name="closed" value="true" />
+      <created>1767179460020</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1767179460020</updated>
+    </task>
+    <task id="LOCAL-00010" summary="&quot;refactor(nlp): enforce constraint contract (fail-fast in debug)&quot;">
+      <option name="closed" value="true" />
+      <created>1767179826025</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1767179826025</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -127,6 +156,9 @@
     <MESSAGE value="git status&#10;git add src/Shopping_assistant/nlp/llm/analyze_clauses.py&#10;git commit -m &quot;refactor(nlp): clean analyze_clauses and world alias index&quot;" />
     <MESSAGE value="&quot;fix(nlp): include negation in evidence for 'not too X' patterns&quot;" />
     <MESSAGE value="&quot;refactor(nlp): stabilize output ordering for mentions and constraints&quot;" />
-    <option name="LAST_COMMIT_MESSAGE" value="&quot;refactor(nlp): stabilize output ordering for mentions and constraints&quot;" />
+    <MESSAGE value="refactor(nlp): centralize spaCy runtime loader&#10;&#10;- Add shared cached spaCy loader in nlp/runtime&#10;- Remove duplicated per-module _load_spacy implementations&#10;- Keep explicit nlp injection and single-load behavior&#10;- Tests passing" />
+    <MESSAGE value="fix(nlp): use Direction.RAISE in constraint normalizer" />
+    <MESSAGE value="&quot;refactor(nlp): enforce constraint contract (fail-fast in debug)&quot;" />
+    <option name="LAST_COMMIT_MESSAGE" value="&quot;refactor(nlp): enforce constraint contract (fail-fast in debug)&quot;" />
   </component>
 </project>

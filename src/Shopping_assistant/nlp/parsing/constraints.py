@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from Shopping_assistant.nlp.axes.mapper import AxisMapper
 from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Polarity, Strength
-from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.nlp.axes.predictor import predict_axis
 
 if TYPE_CHECKING:
     from spacy.language import Language
@@ -20,7 +19,7 @@ else:
 # Axis mapping: small optional lexicon + transformer fallback
 # ---------------------------------------------------------------------
 # Keep this lexicon SMALL. It is only for precision on the most frequent words.
-# Everything else goes through AxisMapper (semantic, non-static word coverage).
+# Everything else goes through predict_axis() (semantic, non-static word coverage).
 
 _AXIS_LEXICON: Dict[str, Axis] = {
     # brightness/lightness
@@ -48,14 +47,12 @@ _AXIS_LEXICON: Dict[str, Axis] = {
     "dull": Axis.CLARITY,
 }
 
-_AXIS_MAPPER: AxisMapper | None = None
 
-
-def _get_axis_mapper(model_name: str = "all-MiniLM-L6-v2") -> AxisMapper:
-    global _AXIS_MAPPER
-    if _AXIS_MAPPER is None:
-        _AXIS_MAPPER = AxisMapper(model_name=model_name)
-    return _AXIS_MAPPER
+def _normalize_model_name(model_name: str) -> str:
+    # Accept both "all-MiniLM-L6-v2" and "sentence-transformers/all-MiniLM-L6-v2".
+    if "/" in (model_name or ""):
+        return model_name
+    return f"sentence-transformers/{model_name}"
 
 
 def _axis_from_token(
@@ -68,7 +65,7 @@ def _axis_from_token(
     Does:
         Map a descriptive token (ADJ or adjectival NOUN) to one of the axes using:
         - small precision lexicon
-        - semantic AxisMapper fallback
+        - semantic embedding predictor fallback
     """
     lemma = tok.lemma_.lower()
     meta: Dict[str, Any] = {"tok_lemma": lemma, "tok_pos": tok.pos_, "tok_text": tok.text}
@@ -78,24 +75,27 @@ def _axis_from_token(
         meta.update({"axis_source": "lexicon", "axis_score": 1.0, "axis": axis.value})
         return axis, meta
 
-    match = _get_axis_mapper(mapper_model).map_adj_to_axis(
+    pred = predict_axis(
         lemma,
-        threshold=mapper_threshold,
-        return_topk=1,
+        context="",
+        model_name=_normalize_model_name(mapper_model),
+        min_sim=float(mapper_threshold),
+        min_margin=0.08,
+        debug=False,
     )
 
-    if match is None:
-        meta.update({"axis_source": "mapper", "axis_score": 0.0, "axis": None})
+    if pred.axis is None:
+        meta.update({"axis_source": "embed", "axis_score": float(pred.confidence), "axis": None})
         return None, meta
 
     meta.update(
         {
-            "axis_source": "mapper",
-            "axis_score": match.score,
-            "axis": match.axis.value,
+            "axis_source": "embed",
+            "axis_score": float(pred.confidence),
+            "axis": pred.axis.value,
         }
     )
-    return match.axis, meta
+    return pred.axis, meta
 
 
 # ---------------------------------------------------------------------
@@ -235,10 +235,6 @@ def extract_constraints_from_doc(
     """
     Does:
         Extract constraints using spaCy dependency structure + transformer axis mapping fallback.
-
-    Notes:
-        We do NOT change the Constraint schema here; clause polarity is carried via meta
-        for downstream resolution/scoring.
     """
     out: List[Constraint] = []
 
@@ -328,14 +324,6 @@ def extract_constraints(
     """
     Does:
         Extract constraints from multiple (clause_id, clause_text) pairs.
-
-    Args:
-        clause_polarities:
-            Optional mapping clause_id -> Polarity used to annotate constraints meta.
-            If not provided, all clauses default to UNKNOWN.
-
-    Important:
-        `nlp` must be provided (single-load spaCy). This function does NOT load spaCy.
     """
     out: List[Constraint] = []
     for cid, text in clauses:
