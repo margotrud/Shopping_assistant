@@ -1,4 +1,4 @@
-# src/Shopping_assistant/nlp/constraints.py
+# src/Shopping_assistant/nlp/parsing/constraints.py
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING

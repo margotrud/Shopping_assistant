@@ -1,8 +1,10 @@
 # src/Shopping_assistant/nlp/preference.py
 from __future__ import annotations
 
+import re
 from dataclasses import replace
-from typing import Any, Dict, List, Optional
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Set
 
 from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
 from Shopping_assistant.nlp.parsing.clauses import ClauseSplitConfig, split_clauses
@@ -26,6 +28,11 @@ from Shopping_assistant.nlp.schema import (
     Span,
 )
 
+# Dynamic axis eligibility: do NOT statically allowlist words.
+# We reuse the same axis predictor logic to decide whether a token should remain eligible
+# for constraint extraction even if it was also extracted as a "color mention".
+from Shopping_assistant.nlp.axes.predictor import predict_axis
+
 __all__ = [
     "interpret_nlp",
     "interpret_preference_text",
@@ -41,6 +48,8 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
     "keep_len_min": 3,
     "keep_len_max": None,
 }
+
+_TOKEN_SPLIT_RE = re.compile(r"[^\w]+")
 
 
 def _to_polarity(x: Optional[str]) -> Polarity:
@@ -102,6 +111,59 @@ def _constraint_sort_key(c: Constraint) -> tuple:
     )
 
 
+def _normalize_model_name(model_name: str) -> str:
+    # Keep consistent with how your predictor expects model names.
+    if "/" in (model_name or ""):
+        return model_name
+    return f"sentence-transformers/{model_name}"
+
+
+@lru_cache(maxsize=8192)
+def _is_axis_like_token(
+    token: str,
+    *,
+    model_name: str,
+    min_sim: float,
+    min_margin: float,
+) -> bool:
+    t = (token or "").strip().lower()
+    if not t or len(t) <= 2:
+        return False
+
+    pred = predict_axis(
+        t,
+        model_name=_normalize_model_name(model_name),
+        min_sim=float(min_sim),
+        min_margin=float(min_margin),
+        debug=False,
+    )
+    return pred.axis is not None
+
+
+def _blocked_lemmas_from_mentions(
+    mention_names: List[str],
+    *,
+    axis_model: str,
+    axis_min_sim: float,
+    axis_min_margin: float,
+) -> Set[str]:
+    blocked: Set[str] = set()
+    for name in mention_names:
+        for tok in _TOKEN_SPLIT_RE.split((name or "").lower()):
+            if not tok:
+                continue
+            # If token is axis-like (per predictor), keep it eligible for constraint extraction.
+            if _is_axis_like_token(
+                tok,
+                model_name=axis_model,
+                min_sim=axis_min_sim,
+                min_margin=axis_min_margin,
+            ):
+                continue
+            blocked.add(tok)
+    return blocked
+
+
 def interpret_nlp(
     text: str,
     *,
@@ -146,7 +208,6 @@ def interpret_nlp(
         diagnostics["mentions"] = []
         diagnostics["constraints"] = []
 
-        # Minimal, stable debug artifact for downstream calibration / inspection.
         trace = {
             "input_text": text,
             "spacy_model": spacy_model,
@@ -178,6 +239,16 @@ def interpret_nlp(
         ]
         mention_names = [m for m in mention_names if m]
         mention_set = set(mention_names)
+
+        # IMPORTANT: blocked_lemmas must be dynamic.
+        # If the mention extractor mistakenly yields axis words (bright/neon/flashy/etc),
+        # we must NOT block them from constraint extraction.
+        blocked_lemmas = _blocked_lemmas_from_mentions(
+            mention_names,
+            axis_model="all-MiniLM-L6-v2",
+            axis_min_sim=0.35,
+            axis_min_margin=0.08,
+        )
 
         pol_map = infer_polarity_for_mentions(
             clause_text,
@@ -249,7 +320,7 @@ def interpret_nlp(
             clause_text,
             clause_id=cl.clause_id,
             clause_polarity=cl_polarity,
-            blocked_lemmas=mention_set,
+            blocked_lemmas=blocked_lemmas,
             nlp=nlp,
         )
 

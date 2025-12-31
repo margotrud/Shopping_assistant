@@ -199,11 +199,22 @@ def _get_assets_preference_weights(assets: AssetBundle) -> Optional[dict[str, fl
     w = getattr(assets, "preference_weights", None)
     if isinstance(w, dict):
         return w  # type: ignore[return-value]
-    # Some bundles may store the dict under a nested field
     w2 = getattr(assets, "pref_weights", None)
     if isinstance(w2, dict):
         return w2  # type: ignore[return-value]
     return None
+
+
+def _print_axis_stats(df: pd.DataFrame, axis: str) -> None:
+    if axis not in df.columns or df.empty:
+        return
+    vals = df[axis].astype(float)
+    print(
+        f"  {axis:<12} "
+        f"min={vals.min():.3f}  "
+        f"mean={vals.mean():.3f}  "
+        f"max={vals.max():.3f}"
+    )
 
 
 def recommend_from_text(
@@ -219,6 +230,7 @@ def recommend_from_text(
     # AB/control hooks (lets you make A vs B comparable)
     constraints_blob_override: str | None = None,
     thresholds_override: dict[Axis, AxisThreshold] | None = None,
+    debug: bool = False,
 ) -> pd.DataFrame:
     """
     Does:
@@ -230,12 +242,16 @@ def recommend_from_text(
         - thresholds_override: if provided (and constraints_blob_override is None), bypasses NLP-derived thresholds
           and builds blob from these thresholds (calibration-aware).
         - If lambda_preference != 0, preference weights must be available on assets (assets.preference_weights).
+        - If debug=True, prints NLP constraints + thresholds + top-K axis distributions.
     """
-    # 0) Stable like_cluster_id
+    # 0) NLP (only for trace/debug + to avoid re-parsing text in downstream pipeline)
+    nlp_res = interpret_nlp(text, debug=debug)
+
+    # 1) Stable like_cluster_id
     if like_cluster_id is None:
         like_cluster_id = _select_like_cluster_id_from_text(text, assets=assets)
 
-    # 0bis) Stable pool:
+    # 1bis) Stable pool
     if candidate_cluster_ids is None:
         candidate_cluster_ids = _neighbor_clusters_from_like_cluster(
             int(like_cluster_id),
@@ -244,14 +260,14 @@ def recommend_from_text(
         )
     candidate_cluster_ids = [int(x) for x in candidate_cluster_ids]
 
-    # 1) Build constraints blob (AB-safe)
+    # 2) Build constraints blob (AB-safe)
     if constraints_blob_override is not None:
         constraints_blob = str(constraints_blob_override).strip()
+        ths = None
     else:
         if thresholds_override is not None:
             ths = dict(thresholds_override)
         else:
-            nlp_res = interpret_nlp(text)
             resolved = resolve_preference(nlp_res)
             intents_by_axis = project_axes(resolved)
             decisions = merge_axis_intents(intents_by_axis)
@@ -259,17 +275,37 @@ def recommend_from_text(
 
         constraints_blob = build_constraints_blob_from_thresholds(ths, calibration=assets.calibration)
 
+    # ---- DEBUG (NLP → thresholds)
+    if debug:
+        print("\n[NLP constraints_final]")
+        for c in (nlp_res.trace or {}).get("constraints_final", []):
+            print(
+                f"  {c['axis']:>10}  {c['direction']:<5}  "
+                f"{c['strength']:<6}  conf={c['confidence']:.2f}  "
+                f"'{c['evidence']}'"
+            )
+
+        if ths:
+            print("\n[Axis thresholds]")
+            for ax, t in ths.items():
+                print(f"  {ax.value:<12} low={t.low} high={t.high} weight={t.weight:.2f}")
+
+        if constraints_blob:
+            print("\n[Constraints blob]")
+            print(f"  {constraints_blob}")
+
+    # 3) Parse constraints blob
     cons: tuple[Constraint, ...] = ()
     if constraints_blob:
         tokens = [t.strip() for t in str(constraints_blob).split(";") if t.strip()]
         cons = tuple(_parse_constraint_token(t) for t in tokens)
 
-    # 2) Inventory + deterministic cluster_id
+    # 4) Inventory + deterministic cluster_id
     df = assets.inventory.copy()
     df = _ensure_cluster_id(df, assets.prototypes, assets.assignments)
     df = df[df["cluster_id"].astype(int).isin(candidate_cluster_ids)].copy()
 
-    # 3) Preference weights (only if enabled)
+    # 5) Preference weights (only if enabled)
     pref_w = None
     if float(lambda_preference) != 0.0:
         pref_w = _get_assets_preference_weights(assets)
@@ -279,7 +315,7 @@ def recommend_from_text(
                 "Expected assets.preference_weights (dict with keys: w_L, w_C, w_H)."
             )
 
-    # 4) Scoring
+    # 6) Scoring
     query = QuerySpec(like_cluster_id=int(like_cluster_id), constraints=cons)
     scored = score_shades(
         df,
@@ -292,4 +328,12 @@ def recommend_from_text(
     )
 
     sort_col = "score_total" if "score_total" in scored.columns else "score"
-    return scored.sort_values(sort_col, ascending=False).head(int(topk))
+    top = scored.sort_values(sort_col, ascending=False).head(int(topk))
+
+    # ---- DEBUG (results distribution)
+    if debug:
+        print("\n[Top-K axis distribution]")
+        for axis in ["brightness", "vibrancy", "saturation", "depth", "clarity"]:
+            _print_axis_stats(top, axis)
+
+    return top
