@@ -18,8 +18,6 @@ else:
 # ---------------------------------------------------------------------
 # Axis mapping: small optional lexicon + transformer fallback
 # ---------------------------------------------------------------------
-# Keep this lexicon SMALL. It is only for precision on the most frequent words.
-# Everything else goes through predict_axis() (semantic, non-static word coverage).
 
 _AXIS_LEXICON: Dict[str, Axis] = {
     # brightness/lightness
@@ -49,7 +47,6 @@ _AXIS_LEXICON: Dict[str, Axis] = {
 
 
 def _normalize_model_name(model_name: str) -> str:
-    # Accept both "all-MiniLM-L6-v2" and "sentence-transformers/all-MiniLM-L6-v2".
     if "/" in (model_name or ""):
         return model_name
     return f"sentence-transformers/{model_name}"
@@ -63,7 +60,7 @@ def _axis_from_token(
 ) -> Tuple[Optional[Axis], Dict[str, Any]]:
     """
     Does:
-        Map a descriptive token (ADJ or adjectival NOUN) to one of the axes using:
+        Map a descriptive token to one of the axes using:
         - small precision lexicon
         - semantic embedding predictor fallback
     """
@@ -99,7 +96,7 @@ def _axis_from_token(
 
 
 # ---------------------------------------------------------------------
-# Dependency-based signals (no trigger lists)
+# Dependency-based signals
 # ---------------------------------------------------------------------
 
 def _has_negation(tok: Token) -> bool:
@@ -107,18 +104,13 @@ def _has_negation(tok: Token) -> bool:
 
 
 def _degree_adverbs(tok: Token) -> List[Token]:
-    # Degree/intensity usually appears as ADV with dep_ "advmod"
     return [ch for ch in tok.children if ch.dep_ == "advmod" and ch.pos_ == "ADV"]
 
 
 def _degree_strength(tok: Token) -> Strength:
-    """
-    Does:
-        Convert syntactic degree modifiers into a coarse strength.
-    """
     deg = _degree_adverbs(tok)
     if not deg:
-        return Strength.MED
+        return Strength.STRONG if _has_negation(tok) else Strength.MED
     if len(deg) >= 2:
         return Strength.STRONG
     if deg[0].lemma_.lower() == "too":
@@ -127,15 +119,6 @@ def _degree_strength(tok: Token) -> Strength:
 
 
 def _direction_from_context(tok: Token) -> Direction:
-    """
-    Does:
-        Infer direction from dependency context.
-        - "less X" => LOWER
-        - "more X" => RAISE
-        - "too X"  => LOWER (cap)  [do NOT invert on negation: "not too X" still LOWER]
-        Default => RAISE
-        Then invert if negated ("not ..."), except cap-case.
-    """
     direction = Direction.RAISE
     has_too = False
 
@@ -157,19 +140,10 @@ def _direction_from_context(tok: Token) -> Direction:
 
 
 def _evidence(tok: Token) -> tuple[str, int, int]:
-    """
-    Does:
-        Build a minimal evidence span around the token:
-        - token itself
-        - neg child ("not") if attached to tok
-        - directional/cap degree advmods: {too, more, less}
-        - also include "not" when it modifies the degree advmod (e.g. "not too neon")
-    """
     keep_adv = {"too", "more", "less"}
 
     toks = [tok]
 
-    # 1) direct children signals
     advmods: List[Token] = []
     for ch in tok.children:
         if ch.dep_ == "neg":
@@ -178,7 +152,6 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
             toks.append(ch)
             advmods.append(ch)
 
-    # 2) handle pattern: "not" attached to the advmod (common in "not too X")
     doc = tok.doc
     for adv in advmods:
         j = adv.i - 1
@@ -187,7 +160,6 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
             if left.lemma_.lower() == "not":
                 toks.append(left)
 
-    # 3) final normalize + span
     toks = sorted({t.i: t for t in toks}.values(), key=lambda t: t.i)
 
     start = toks[0].idx
@@ -199,23 +171,70 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
 
 
 def _is_adjectival_noun(tok: Token) -> bool:
-    """
-    Does:
-        Heuristic: accept NOUN tokens that behave like adjectives in short phrases,
-        e.g., "neon pink", "too neon".
-    """
     if tok.pos_ != "NOUN":
         return False
     if tok.is_stop or tok.is_punct or tok.is_space:
         return False
     if len(tok.text) <= 2:
         return False
-    # common adjectival roles: amod (modifier), acomp (complement), attr
     if tok.dep_ in {"amod", "acomp", "attr"}:
         return True
-    # allow "too neon": neon as complement-like token
     if any(ch.dep_ == "advmod" and ch.lemma_.lower() in {"too", "very", "so"} for ch in tok.children):
         return True
+    return False
+
+
+def _axis_from_negated_fallback(
+    tok: Token,
+    *,
+    mapper_model: str,
+    mapper_threshold: float,
+) -> Tuple[Optional[Axis], Dict[str, Any]]:
+    lemma = tok.lemma_.lower()
+    pred = predict_axis(
+        lemma,
+        context="",
+        model_name=_normalize_model_name(mapper_model),
+        min_sim=float(max(0.20, mapper_threshold - 0.10)),
+        min_margin=0.05,
+        debug=False,
+    )
+    meta: Dict[str, Any] = {
+        "tok_lemma": lemma,
+        "tok_pos": tok.pos_,
+        "tok_text": tok.text,
+        "axis_source": "embed_neg_fallback",
+        "axis_score": float(pred.confidence),
+        "axis": pred.axis.value if pred.axis is not None else None,
+    }
+    return pred.axis, meta
+
+
+def _is_constraint_candidate(tok: Token) -> bool:
+    """
+    Does:
+        Decide whether a token is eligible for constraint extraction.
+
+    Important:
+        Accept elliptical constructions like "not neon / not flashy" even if spaCy tags
+        the adjective-like token as NOUN/PROPN (common with punctuation like '/').
+    """
+    if tok.is_stop or tok.is_punct or tok.is_space:
+        return False
+    if len(tok.text) <= 2:
+        return False
+
+    if tok.pos_ == "ADJ":
+        return True
+    if _is_adjectival_noun(tok):
+        return True
+
+    # NEW: accept if it has explicit negation or degree modifier (covers POS mis-tags)
+    if _has_negation(tok):
+        return True
+    if any(ch.dep_ == "advmod" and ch.lemma_.lower() in {"too", "more", "less"} for ch in tok.children):
+        return True
+
     return False
 
 
@@ -239,11 +258,7 @@ def extract_constraints_from_doc(
     out: List[Constraint] = []
 
     for tok in doc:
-        if tok.pos_ == "ADJ":
-            pass
-        elif _is_adjectival_noun(tok):
-            pass
-        else:
+        if not _is_constraint_candidate(tok):
             continue
 
         lemma = tok.lemma_.lower()
@@ -255,11 +270,30 @@ def extract_constraints_from_doc(
             mapper_model=mapper_model,
             mapper_threshold=mapper_threshold,
         )
+
+        # support simple negation "not X" dynamically
+        if axis is None and _has_negation(tok):
+            axis2, axis_meta2 = _axis_from_negated_fallback(
+                tok,
+                mapper_model=mapper_model,
+                mapper_threshold=mapper_threshold,
+            )
+            if axis2 is not None:
+                axis = axis2
+                axis_meta = axis_meta2
+
         if axis is None:
             continue
 
-        direction = _direction_from_context(tok)
-        strength = _degree_strength(tok)
+        # For negated adjectives without explicit degree ("not neon", "not flashy"),
+        # force a cap behavior: LOWER + STRONG. (No inversion ambiguity.)
+        if _has_negation(tok) and not any(ch.dep_ == "advmod" and ch.lemma_.lower() == "too" for ch in tok.children):
+            direction = Direction.LOWER
+            strength = Strength.STRONG
+        else:
+            direction = _direction_from_context(tok)
+            strength = _degree_strength(tok)
+
         evidence, ev_start, ev_end = _evidence(tok)
 
         out.append(

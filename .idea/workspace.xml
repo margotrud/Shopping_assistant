@@ -4,11 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="&quot;Add NLP trace for constraint debugging&quot;">
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="&quot;Make blocked_lemmas dynamic to preserve axis constraints&quot;">
+      <change afterPath="$PROJECT_DIR$/small_test.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/interpretation/preference.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/constraints.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/reco/recommend.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/reco/recommend.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -36,17 +35,18 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;Python.axis_thresholds.executor&quot;: &quot;Run&quot;,
-    &quot;Python.reco_ab.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Python.axis_thresholds.executor": "Run",
+    "Python.reco_ab.executor": "Run",
+    "Python.small_test.executor": "Run",
+    "RunOnceActivity.OpenProjectViewOnStart": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/Users/33628/OneDrive/Documents/Projects/Shopping_Assistant_V8/Shopping_Assistant_V8/pythonProject",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
   }
-}</component>
+}]]></component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -151,7 +151,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767183987276</updated>
     </task>
-    <option name="localTasksCounter" value="12" />
+    <task id="LOCAL-00012" summary="&quot;Make blocked_lemmas dynamic to preserve axis constraints&quot;">
+      <option name="closed" value="true" />
+      <created>1767186398786</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1767186398786</updated>
+    </task>
+    <option name="localTasksCounter" value="13" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -166,6 +174,7 @@
     <MESSAGE value="fix(nlp): use Direction.RAISE in constraint normalizer" />
     <MESSAGE value="&quot;refactor(nlp): enforce constraint contract (fail-fast in debug)&quot;" />
     <MESSAGE value="&quot;Add NLP trace for constraint debugging&quot;" />
-    <option name="LAST_COMMIT_MESSAGE" value="&quot;Add NLP trace for constraint debugging&quot;" />
+    <MESSAGE value="&quot;Make blocked_lemmas dynamic to preserve axis constraints&quot;" />
+    <option name="LAST_COMMIT_MESSAGE" value="&quot;Make blocked_lemmas dynamic to preserve axis constraints&quot;" />
   </component>
 </project>
