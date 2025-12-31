@@ -2,30 +2,29 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
+from Shopping_assistant.nlp.parsing.clauses import ClauseSplitConfig, split_clauses
+from Shopping_assistant.nlp.parsing.constraints import extract_constraints_from_clause_text
+from Shopping_assistant.nlp.parsing.polarity import (
+    decide_clause_polarity,
+    infer_polarity_for_mentions,
+    make_free_polarity_fn,
+)
 from Shopping_assistant.nlp.resolve import resolve_preference
 from Shopping_assistant.nlp.resolve.conflicts import resolve_symbolic_conflicts
-from Shopping_assistant.nlp.parsing.clauses import split_clauses, ClauseSplitConfig
-from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
-from Shopping_assistant.nlp.parsing.polarity import (
-    make_free_polarity_fn,
-    infer_polarity_for_mentions,
-    decide_clause_polarity,
-)
-from Shopping_assistant.nlp.parsing.constraints import extract_constraints_from_clause_text
+from Shopping_assistant.nlp.resolve.constraint_normalizer import normalize_constraints
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.nlp.schema import (
-    NLPResult,
     Clause,
+    Constraint,
     Mention,
     MentionKind,
+    NLPResult,
     Polarity,
     Span,
-    Constraint,
 )
-from Shopping_assistant.utils.optional_deps import require
-from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 
 __all__ = [
     "interpret_nlp",
@@ -42,6 +41,7 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
     "keep_len_min": 3,
     "keep_len_max": None,
 }
+
 
 def _to_polarity(x: Optional[str]) -> Polarity:
     if not isinstance(x, str):
@@ -110,9 +110,6 @@ def interpret_nlp(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> NLPResult:
-    # ------------------------------------------------------------
-    # Single-load spaCy runtime
-    # ------------------------------------------------------------
     nlp = load_spacy(spacy_model)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG
@@ -124,10 +121,7 @@ def interpret_nlp(
         debug=debug,
     )
 
-    # World alias index (colors etc.)
     color_index = build_world_alias_index(include_xkcd=include_xkcd)
-
-    # Polarity backend (offline ST)
     pol_fn = make_free_polarity_fn()
 
     all_mentions: List[Mention] = []
@@ -163,7 +157,6 @@ def interpret_nlp(
         # Mentions (colors)
         # -----------------------------
         mention_dicts = extract_mentions_free(clause_text, color_index)
-
         mention_names = [
             str(m.get("name") or "").strip()
             for m in mention_dicts
@@ -183,7 +176,6 @@ def interpret_nlp(
             pol_map,
             elliptical_neg=cl.elliptical_neg,
         )
-
         clauses_out.append(replace(cl, polarity=cl_polarity))
 
         for m in mention_dicts:
@@ -193,13 +185,8 @@ def interpret_nlp(
             if not name or name == "lipstick":
                 continue
 
-            span_local = _mention_span_from_doc(
-                doc, m.get("tok_start"), m.get("tok_len")
-            )
-            span_global = Span(
-                span_local.start + clause_offset,
-                span_local.end + clause_offset,
-            )
+            span_local = _mention_span_from_doc(doc, m.get("tok_start"), m.get("tok_len"))
+            span_global = Span(span_local.start + clause_offset, span_local.end + clause_offset)
 
             mention_obj = Mention(
                 span=span_global,
@@ -271,9 +258,11 @@ def interpret_nlp(
             )
 
     # -----------------------------
-    # Final stabilization (deterministic output order)
+    # Conflicts + normalization + final stabilization (deterministic output order)
     # -----------------------------
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
+    constraints_final = normalize_constraints(constraints_final)
+
     constraints_sorted = tuple(sorted(constraints_final, key=_constraint_sort_key))
     mentions_sorted = tuple(sorted(all_mentions, key=_mention_sort_key))
 
