@@ -18,6 +18,17 @@ _AXIS_TO_DIM: Dict[str, str] = {
 
 _ALLOWED_LEVELS = ("low", "medium", "high", "very_high")
 
+# Default fallback cutpoints when calibration is missing.
+# Only safe for dims that are natively on ~[0,1] in scoring space.
+# DO NOT add sat_eff here (it is not on [0,1] and must remain calibration-driven).
+_DEFAULT_LEVEL_CUTS_01: Dict[str, Tuple[float, float, float]] = {
+    # boundaries between low/medium/high/very_high
+    "light_hsl": (0.35, 0.55, 0.75),
+    "sat_hsl": (0.30, 0.50, 0.70),
+    "depth": (0.30, 0.50, 0.70),
+    "colorfulness": (0.30, 0.50, 0.70),
+}
+
 
 def build_constraints_blob_from_thresholds(
     thresholds: Mapping[Axis, AxisThreshold],
@@ -39,6 +50,7 @@ def build_constraints_blob_from_thresholds(
 
         If calibration is missing/unusable for a dim, the constraint is skipped (do not emit
         numeric cutpoints: they are on the NLP [0,1] scale and will break dims like sat_eff).
+        Exception: for dims known to be on [0,1], we use deterministic default cutpoints.
     """
     tokens: List[str] = []
     for axis, th in thresholds.items():
@@ -103,9 +115,25 @@ def _level_from_numeric_threshold(
         - If calibration thresholds for dim are in [0,1], snap by nearest numeric distance.
         - Otherwise (dim thresholds are on another scale), interpret NLP value as a [0,1] rank/quantile
           and choose the LEVEL by position in the sorted thresholds list.
+
+    Fallback:
+        - If calibration is missing, only dims known to live on [0,1] may be snapped using
+          default cutpoints (_DEFAULT_LEVEL_CUTS_01). All other dims are skipped.
     """
+    # Fallback when calibration missing: only safe for dims on ~[0,1]
     if calibration is None:
-        return None
+        cuts = _DEFAULT_LEVEL_CUTS_01.get(dim)
+        if cuts is None:
+            return None  # e.g. sat_eff must not be snapped without calibration
+        a, b, c = cuts
+        v = float(value)
+        if v <= a:
+            return "low"
+        if v <= b:
+            return "medium"
+        if v <= c:
+            return "high"
+        return "very_high"
 
     levels_map = _get_dim_thresholds(calibration, dim=dim)
     if not levels_map:
@@ -177,6 +205,7 @@ def score_inventory_kwargs(
     Important:
         Constraint blob uses LEVEL tokens (calibration-aware). If calibration is missing,
         constraints that require snapping are skipped rather than emitting broken numeric cutpoints.
+        Exception: dims known to be on [0,1] use deterministic fallback cutpoints.
     """
     constraints_blob = build_constraints_blob_from_thresholds(thresholds, calibration=calibration)
     return {
