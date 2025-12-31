@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, TypedDict
 
 from Shopping_assistant.nlp.schema import Clause, Polarity
 from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 
 log = logging.getLogger(__name__)
 
@@ -39,22 +40,6 @@ class ClauseSplitConfig(TypedDict):
     split_punct: List[str]
     keep_len_min: int
     keep_len_max: Optional[int]
-
-
-@lru_cache(maxsize=2)
-def _load_spacy(model_name: str) -> Language:
-    spacy = require(
-        "spacy",
-        extra="spacy",
-        purpose="Needed for nlp.clauses.split_clauses_with_reasons().",
-    )
-    try:
-        return spacy.load(model_name)
-    except OSError as e:
-        raise RuntimeError(
-            f"spaCy model {model_name!r} not available. "
-            f"Install it with: python -m spacy download {model_name}"
-        ) from e
 
 
 def _has_finite_verb(span: Span) -> bool:
@@ -395,7 +380,7 @@ def split_clauses_with_reasons(
         log.debug("ENTER split_clauses_with_reasons text=%r", text)
 
     if nlp is None:
-        nlp = _load_spacy(spacy_model)
+        nlp = load_spacy(spacy_model)
     doc = nlp(text)
 
     spans = _sents_merged_on_leading_connective(doc)

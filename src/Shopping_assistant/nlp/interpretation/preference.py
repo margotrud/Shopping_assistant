@@ -25,6 +25,7 @@ from Shopping_assistant.nlp.schema import (
     Constraint,
 )
 from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 
 __all__ = [
     "interpret_nlp",
@@ -41,17 +42,6 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
     "keep_len_min": 3,
     "keep_len_max": None,
 }
-
-
-@lru_cache(maxsize=2)
-def _load_spacy(model: str):
-    spacy = require(
-        "spacy",
-        extra="spacy",
-        purpose="Needed for interpret_nlp() (single-load spaCy runtime).",
-    )
-    return spacy.load(model)
-
 
 def _to_polarity(x: Optional[str]) -> Polarity:
     if not isinstance(x, str):
@@ -123,7 +113,7 @@ def interpret_nlp(
     # ------------------------------------------------------------
     # Single-load spaCy runtime
     # ------------------------------------------------------------
-    nlp = _load_spacy(spacy_model)
+    nlp = load_spacy(spacy_model)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG
     clauses_in = split_clauses(
