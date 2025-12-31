@@ -1,27 +1,19 @@
 # src/Shopping_assistant/nlp/constraints.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-
-import spacy
-from spacy.tokens import Doc, Token
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 from Shopping_assistant.nlp.axes.mapper import AxisMapper
 from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Polarity, Strength
+from Shopping_assistant.utils.optional_deps import require
 
-
-# ---------------------------------------------------------------------
-# spaCy loader (fail fast with explicit install instruction)
-# ---------------------------------------------------------------------
-
-def _load_spacy(model: str = "en_core_web_sm") -> spacy.language.Language:
-    try:
-        return spacy.load(model)
-    except OSError as e:
-        raise RuntimeError(
-            f"spaCy model '{model}' is not installed. "
-            f"Install it with: python -m spacy download {model}"
-        ) from e
+if TYPE_CHECKING:
+    from spacy.language import Language
+    from spacy.tokens import Doc, Token
+else:
+    Language = Any  # type: ignore
+    Doc = Any       # type: ignore
+    Token = Any     # type: ignore
 
 
 # ---------------------------------------------------------------------
@@ -291,13 +283,15 @@ def extract_constraints_from_clause_text(
     clause_id: int,
     clause_polarity: Polarity = Polarity.UNKNOWN,
     blocked_lemmas: Optional[set[str]] = None,
-    nlp: Optional[spacy.language.Language] = None,
-    spacy_model: str = "en_core_web_sm",
+    nlp: Language,
     mapper_model: str = "all-MiniLM-L6-v2",
     mapper_threshold: float = 0.35,
 ) -> List[Constraint]:
-    nlp_ = nlp or _load_spacy(spacy_model)
-    doc = nlp_(clause_text)
+    """
+    Important:
+        `nlp` must be provided (single-load spaCy). This function does NOT load spaCy.
+    """
+    doc = nlp(clause_text)
     return extract_constraints_from_doc(
         doc,
         clause_id=clause_id,
@@ -312,8 +306,7 @@ def extract_constraints(
     clauses: Iterable[Tuple[int, str]],
     *,
     clause_polarities: Optional[Dict[int, Polarity]] = None,
-    nlp: Optional[spacy.language.Language] = None,
-    spacy_model: str = "en_core_web_sm",
+    nlp: Language,
     mapper_model: str = "all-MiniLM-L6-v2",
     mapper_threshold: float = 0.35,
 ) -> List[Constraint]:
@@ -325,11 +318,13 @@ def extract_constraints(
         clause_polarities:
             Optional mapping clause_id -> Polarity used to annotate constraints meta.
             If not provided, all clauses default to UNKNOWN.
+
+    Important:
+        `nlp` must be provided (single-load spaCy). This function does NOT load spaCy.
     """
-    nlp_ = nlp or _load_spacy(spacy_model)
     out: List[Constraint] = []
     for cid, text in clauses:
-        doc = nlp_(text)
+        doc = nlp(text)
         pol = Polarity.UNKNOWN if clause_polarities is None else clause_polarities.get(cid, Polarity.UNKNOWN)
         out.extend(
             extract_constraints_from_doc(

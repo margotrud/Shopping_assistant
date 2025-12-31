@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="scoring_adapter">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/resolve/scoring_adapter.py" afterDir="false" />
+    <list default="true" id="3bf187e5-d7e0-43c6-a449-f61589a336d8" name="Changes" comment="fix(nlp): fallback level snapping when calibration is missing&#10;&#10;- Add deterministic [0,1] fallback cutpoints for light_hsl, sat_hsl, depth, colorfulness&#10;- Keep sat_eff calibration-only to avoid invalid snapping&#10;- Ensure constraints blob is emitted for single-sided thresholds (e.g. BRIGHTNESS cap)&#10;- All tests passing">
+      <change beforePath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/clauses.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Shopping_assistant/nlp/parsing/clauses.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -78,12 +76,21 @@
       <option name="project" value="LOCAL" />
       <updated>1766938098991</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="fix(nlp): fallback level snapping when calibration is missing&#10;&#10;- Add deterministic [0,1] fallback cutpoints for light_hsl, sat_hsl, depth, colorfulness&#10;- Keep sat_eff calibration-only to avoid invalid snapping&#10;- Ensure constraints blob is emitted for single-sided thresholds (e.g. BRIGHTNESS cap)&#10;- All tests passing">
+      <option name="closed" value="true" />
+      <created>1767176566577</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1767176566577</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="commit new arborescence" />
     <MESSAGE value="scoring_adapter" />
-    <option name="LAST_COMMIT_MESSAGE" value="scoring_adapter" />
+    <MESSAGE value="fix(nlp): fallback level snapping when calibration is missing&#10;&#10;- Add deterministic [0,1] fallback cutpoints for light_hsl, sat_hsl, depth, colorfulness&#10;- Keep sat_eff calibration-only to avoid invalid snapping&#10;- Ensure constraints blob is emitted for single-sided thresholds (e.g. BRIGHTNESS cap)&#10;- All tests passing" />
+    <option name="LAST_COMMIT_MESSAGE" value="fix(nlp): fallback level snapping when calibration is missing&#10;&#10;- Add deterministic [0,1] fallback cutpoints for light_hsl, sat_hsl, depth, colorfulness&#10;- Keep sat_eff calibration-only to avoid invalid snapping&#10;- Ensure constraints blob is emitted for single-sided thresholds (e.g. BRIGHTNESS cap)&#10;- All tests passing" />
   </component>
 </project>

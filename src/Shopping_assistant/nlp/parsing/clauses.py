@@ -377,6 +377,7 @@ def _tag_elliptical_neg(chunks: List[ClauseChunk]) -> None:
 def split_clauses_with_reasons(
     text: str,
     *,
+    nlp: Language | None = None,
     spacy_model: str = "en_core_web_sm",
     config: ClauseSplitConfig,
     debug: bool = False,
@@ -386,11 +387,15 @@ def split_clauses_with_reasons(
         Split English text into clause-like chunks using UD POS/DEP & punctuation.
     Returns:
         List[ClauseChunk] with offsets and cut reasons.
+
+    Important:
+        If `nlp` is provided, it is used directly and spaCy is NOT loaded again.
     """
     if debug:
         log.debug("ENTER split_clauses_with_reasons text=%r", text)
 
-    nlp = _load_spacy(spacy_model)
+    if nlp is None:
+        nlp = _load_spacy(spacy_model)
     doc = nlp(text)
 
     spans = _sents_merged_on_leading_connective(doc)
@@ -459,11 +464,18 @@ def chunks_to_clauses(chunks: List[ClauseChunk]) -> Tuple[Clause, ...]:
 def split_clauses(
     text: str,
     *,
+    nlp: Language | None = None,
     spacy_model: str = "en_core_web_sm",
     config: ClauseSplitConfig,
     debug: bool = False,
 ) -> Tuple[Clause, ...]:
-    chunks = split_clauses_with_reasons(text, spacy_model=spacy_model, config=config, debug=debug)
+    chunks = split_clauses_with_reasons(
+        text,
+        nlp=nlp,
+        spacy_model=spacy_model,
+        config=config,
+        debug=debug,
+    )
     return chunks_to_clauses(chunks)
 
 

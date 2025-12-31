@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from Shopping_assistant.nlp.resolve import resolve_preference
@@ -40,6 +41,16 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
     "keep_len_min": 3,
     "keep_len_max": None,
 }
+
+
+@lru_cache(maxsize=2)
+def _load_spacy(model: str):
+    spacy = require(
+        "spacy",
+        extra="spacy",
+        purpose="Needed for interpret_nlp() (single-load spaCy runtime).",
+    )
+    return spacy.load(model)
 
 
 def _to_polarity(x: Optional[str]) -> Polarity:
@@ -82,15 +93,19 @@ def interpret_nlp(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> NLPResult:
-    spacy = require(
-        "spacy",
-        extra="spacy",
-        purpose="Needed for interpret_nlp() because it runs parsing over clauses.",
-    )
-    nlp = spacy.load(spacy_model)
+    # ------------------------------------------------------------
+    # Single-load spaCy runtime
+    # ------------------------------------------------------------
+    nlp = _load_spacy(spacy_model)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG
-    clauses_in = split_clauses(text, spacy_model=spacy_model, config=cfg, debug=debug)
+    clauses_in = split_clauses(
+        text,
+        nlp=nlp,
+        spacy_model=spacy_model,
+        config=cfg,
+        debug=debug,
+    )
 
     # World alias index (colors etc.)
     color_index = build_world_alias_index(include_xkcd=include_xkcd)
@@ -140,7 +155,6 @@ def interpret_nlp(
         mention_names = [m for m in mention_names if m]
         mention_set = set(mention_names)
 
-        # mention-level labels ("LIKE"/"DISLIKE"/None)
         pol_map = infer_polarity_for_mentions(
             clause_text,
             mention_names,
@@ -148,13 +162,11 @@ def interpret_nlp(
             elliptical_neg=cl.elliptical_neg,
         )
 
-        # clause-level polarity (enum)
         cl_polarity = decide_clause_polarity(
             pol_map,
             elliptical_neg=cl.elliptical_neg,
         )
 
-        # persist clause polarity in output clauses
         clauses_out.append(replace(cl, polarity=cl_polarity))
 
         for m in mention_dicts:
@@ -164,8 +176,13 @@ def interpret_nlp(
             if not name or name == "lipstick":
                 continue
 
-            span_local = _mention_span_from_doc(doc, m.get("tok_start"), m.get("tok_len"))
-            span_global = Span(span_local.start + clause_offset, span_local.end + clause_offset)
+            span_local = _mention_span_from_doc(
+                doc, m.get("tok_start"), m.get("tok_len")
+            )
+            span_global = Span(
+                span_local.start + clause_offset,
+                span_local.end + clause_offset,
+            )
 
             mention_obj = Mention(
                 span=span_global,
@@ -178,14 +195,13 @@ def interpret_nlp(
                 meta={"hue_deg": m.get("hue_deg"), "chunk": cl.meta.get("chunk")},
             )
 
-            # inherit clause polarity when mention is still UNKNOWN
             if mention_obj.polarity == Polarity.UNKNOWN:
                 mention_obj = replace(mention_obj, polarity=cl_polarity)
 
             all_mentions.append(mention_obj)
 
         # -----------------------------
-        # Constraints (typed, canonical)
+        # Constraints
         # -----------------------------
         cons = extract_constraints_from_clause_text(
             clause_text,
@@ -193,18 +209,15 @@ def interpret_nlp(
             clause_polarity=cl_polarity,
             blocked_lemmas=mention_set,
             nlp=nlp,
-            spacy_model=spacy_model,
         )
 
         for c in cons:
             meta = dict(c.meta or {})
             s = meta.get("evidence_char_start")
             e = meta.get("evidence_char_end")
-
             if isinstance(s, int) and isinstance(e, int):
                 meta["evidence_global_start"] = s + clause_offset
                 meta["evidence_global_end"] = e + clause_offset
-
             all_constraints.append(replace(c, meta=meta))
 
         if debug:
@@ -240,11 +253,7 @@ def interpret_nlp(
                 ]
             )
 
-    # -----------------------------------------------------------------
-    # PR#3: Resolve symbolic conflicts BEFORE returning the NLPResult
-    # -----------------------------------------------------------------
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
-
     diagnostics = dict(diagnostics or {})
     diagnostics["conflicts"] = conflicts_diag
 
@@ -265,7 +274,6 @@ def interpret_preference_text(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Does: Convenience wrapper returning a JSON-friendly dict for apps/CLI."""
     res = interpret_nlp(
         text,
         spacy_model=spacy_model,
@@ -283,7 +291,6 @@ def interpret_preference_text(
 
 
 def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
-    """Does: Resolve and return a downstream preference structure."""
     return resolve_preference(nlp_res)
 
 
@@ -295,7 +302,6 @@ def build_preference_from_text(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Does: interpret_nlp(text) then build_preference_from_nlp(result)."""
     nlp_res = interpret_nlp(
         text,
         spacy_model=spacy_model,
