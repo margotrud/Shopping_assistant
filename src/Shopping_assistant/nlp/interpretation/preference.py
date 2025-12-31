@@ -85,6 +85,33 @@ def _mention_span_from_doc(doc: Any, tok_start: Any, tok_len: Any) -> Span:
     return Span(int(span.start_char), int(span.end_char))
 
 
+def _mention_sort_key(m: Mention) -> tuple:
+    return (
+        int(m.clause_id),
+        int(m.span.start),
+        str(m.kind.value),
+        str(m.canonical),
+        str(m.raw),
+    )
+
+
+def _constraint_sort_key(c: Constraint) -> tuple:
+    meta = c.meta or {}
+    gs = meta.get("evidence_global_start")
+    ge = meta.get("evidence_global_end")
+    gs_i = int(gs) if isinstance(gs, int) else 10**9
+    ge_i = int(ge) if isinstance(ge, int) else 10**9
+    return (
+        int(c.clause_id),
+        str(c.axis.value),
+        str(c.direction.value),
+        str(c.strength.value),
+        gs_i,
+        ge_i,
+        str(c.evidence),
+    )
+
+
 def interpret_nlp(
     text: str,
     *,
@@ -253,15 +280,43 @@ def interpret_nlp(
                 ]
             )
 
+    # -----------------------------
+    # Final stabilization (deterministic output order)
+    # -----------------------------
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
+    constraints_sorted = tuple(sorted(constraints_final, key=_constraint_sort_key))
+    mentions_sorted = tuple(sorted(all_mentions, key=_mention_sort_key))
+
     diagnostics = dict(diagnostics or {})
     diagnostics["conflicts"] = conflicts_diag
+
+    if debug and isinstance(diagnostics.get("mentions"), list):
+        diagnostics["mentions"] = sorted(
+            diagnostics["mentions"],
+            key=lambda d: (
+                d.get("clause_id", 0),
+                (d.get("span", {}) or {}).get("start", 10**9),
+                d.get("canonical", ""),
+                d.get("raw", ""),
+            ),
+        )
+    if debug and isinstance(diagnostics.get("constraints"), list):
+        diagnostics["constraints"] = sorted(
+            diagnostics["constraints"],
+            key=lambda d: (
+                d.get("clause_id", 0),
+                str(d.get("axis", "")),
+                str(d.get("direction", "")),
+                str(d.get("strength", "")),
+                (d.get("meta", {}) or {}).get("evidence_global_start", 10**9),
+            ),
+        )
 
     return NLPResult(
         text=text,
         clauses=tuple(clauses_out) if clauses_out else tuple(clauses_in),
-        mentions=tuple(all_mentions),
-        constraints=constraints_final,
+        mentions=mentions_sorted,
+        constraints=constraints_sorted,
         diagnostics=diagnostics,
     )
 
