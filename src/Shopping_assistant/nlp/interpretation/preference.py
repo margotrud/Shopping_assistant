@@ -261,7 +261,7 @@ def interpret_nlp(
     # Conflicts + normalization + final stabilization (deterministic output order)
     # -----------------------------
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
-    constraints_final = normalize_constraints(constraints_final)
+    constraints_final = normalize_constraints(constraints_final, strict=debug)
 
     constraints_sorted = tuple(sorted(constraints_final, key=_constraint_sort_key))
     mentions_sorted = tuple(sorted(all_mentions, key=_mention_sort_key))
