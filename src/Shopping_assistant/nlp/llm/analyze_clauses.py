@@ -1,9 +1,12 @@
 # src/Shopping_assistant/nlp/llm/analyze_clauses.py
 from __future__ import annotations
 
+import colorsys
 import re
 from functools import lru_cache
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, TypedDict
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypedDict
+
+import numpy as np
 
 from Shopping_assistant.utils.optional_deps import require
 from Shopping_assistant.nlp.parsing.clauses import ClauseChunk
@@ -39,6 +42,7 @@ class Mention(TypedDict, total=False):
     alias: str
     name: str
     hue_deg: float
+    lab_hue_deg: float
     tok_start: int
     tok_len: int
 
@@ -53,6 +57,7 @@ def _norm(s: str) -> str:
         Normalize a string into lowercase alnum tokens separated by single spaces.
     """
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in s).split())
+
 
 def _token_freq_over_aliases(aliases: Iterable[str]) -> Dict[str, int]:
     freq: Dict[str, int] = {}
@@ -73,47 +78,99 @@ def _build_xkcd_single_token_allowset(
     """
     Does:
         Build a dynamic allowlist for single-token XKCD aliases.
-
-    Rules (dynamic, data-derived):
-        - Always allow if the exact alias is also a CSS alias (CSS acts as anchor).
-        - Otherwise, allow if the token appears frequently inside multi-token color aliases
-          (signal that it behaves like a color descriptor/token, not a random noun).
     """
-    # Multi-token aliases are where the "color vocabulary" lives.
     xkcd_multi = {a for a in xkcd_aliases if " " in a}
     css_multi = {a for a in css_aliases if " " in a}
 
-    # Token frequencies inside multi-token aliases
     freq = _token_freq_over_aliases(xkcd_multi | css_multi)
 
-    # Compute a dynamic threshold: keep tokens that are common enough in the alias universe.
-    # Use a percentile-ish heuristic without numpy:
     vals = sorted(freq.values())
     if not vals:
         return set()
 
-    # threshold = max(3, median) -> conservative but fully data-driven
     med = vals[len(vals) // 2]
     thr = max(3, int(med))
 
     allow: set[str] = set()
-
-    # Single-token XKCD aliases
     for a in xkcd_aliases:
         if " " in a:
             continue
         t = a
         if not t or len(t) < 3:
             continue
-
         if t in css_aliases:
             allow.add(t)
             continue
-
         if freq.get(t, 0) >= thr:
             allow.add(t)
 
     return allow
+
+
+# ---------------------------------------------------------------------------
+# Hex -> hue helpers (dynamic, derived from inventories)
+# ---------------------------------------------------------------------------
+
+def _hex_to_rgb01(hx: str) -> Optional[Tuple[float, float, float]]:
+    if not isinstance(hx, str):
+        return None
+    s = hx.strip().lstrip("#")
+    if len(s) != 6:
+        return None
+    try:
+        r = int(s[0:2], 16) / 255.0
+        g = int(s[2:4], 16) / 255.0
+        b = int(s[4:6], 16) / 255.0
+        return (r, g, b)
+    except Exception:
+        return None
+
+
+def _hex_to_hue_deg(hx: str) -> Optional[float]:
+    rgb01 = _hex_to_rgb01(hx)
+    if rgb01 is None:
+        return None
+    h, _s, _v = colorsys.rgb_to_hsv(*rgb01)
+    return float((h * 360.0) % 360.0)
+
+
+def _srgb01_to_linear(x: float) -> float:
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+
+
+def _hex_to_lab(hx: str) -> Optional[Tuple[float, float, float]]:
+    rgb01 = _hex_to_rgb01(hx)
+    if rgb01 is None:
+        return None
+
+    r, g, b = rgb01
+    r, g, b = _srgb01_to_linear(r), _srgb01_to_linear(g), _srgb01_to_linear(b)
+
+    # sRGB D65
+    X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
+    Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
+    Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
+
+    # D65 white
+    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+    x, y, z = X / Xn, Y / Yn, Z / Zn
+
+    d = 6 / 29
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > d**3 else (t / (3 * d**2) + 4 / 29)
+
+    fx, fy, fz = f(x), f(y), f(z)
+    L = 116 * fy - 16
+    a = 500 * (fx - fy)
+    b2 = 200 * (fy - fz)
+
+    return (float(L), float(a), float(b2))
+
+
+def _lab_hue_deg_from_ab(a: float, b: float) -> float:
+    return float(np.degrees(np.arctan2(b, a)) % 360.0)
+
 
 # ---------------------------------------------------------------------------
 # World alias index (CSS + XKCD), dependency-driven
@@ -121,7 +178,6 @@ def _build_xkcd_single_token_allowset(
 
 def _iter_css_color_names() -> Iterable[str]:
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color name inventory")
-    # webcolors API differs by version; support both.
     if hasattr(webcolors, "names"):
         try:
             return list(webcolors.names("css3"))
@@ -133,9 +189,8 @@ def _iter_css_color_names() -> Iterable[str]:
 
 
 def _iter_xkcd_color_items() -> Iterable[Tuple[str, str]]:
-    mpl = require("matplotlib", extra="matplotlib", purpose="XKCD color name inventory")
+    require("matplotlib", extra="matplotlib", purpose="XKCD color name inventory")
     from matplotlib import colors as mcolors  # type: ignore
-    # keys: "xkcd:cloudy blue" -> hex
     return list(getattr(mcolors, "XKCD_COLORS").items())
 
 
@@ -167,11 +222,7 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
         Build a dynamic alias index from CSS/XKCD color inventories.
 
     Returns:
-        Mapping alias -> {name, hex, source, ...}
-
-    Important:
-        XKCD single-token aliases are filtered dynamically to reduce false positives.
-        No static word lists are used.
+        Mapping alias -> {name, hex, hue_deg, lab_hue_deg, source, ...}
     """
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color inventory")
     idx: Dict[str, Dict[str, Any]] = {}
@@ -191,6 +242,16 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
         info: Dict[str, Any] = {"name": alias, "source": "css"}
         if hx:
             info["hex"] = hx
+
+            hue = _hex_to_hue_deg(hx)
+            if hue is not None:
+                info["hue_deg"] = hue
+
+            lab = _hex_to_lab(hx)
+            if lab is not None:
+                _L, a, b = lab
+                info["lab_hue_deg"] = _lab_hue_deg_from_ab(a, b)
+
         idx[alias] = info
 
     if include_xkcd:
@@ -212,21 +273,29 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
             if not alias:
                 continue
 
-            # multi-token XKCD => keep
             if " " not in alias:
-                # single-token XKCD => keep only if dynamically allowed
                 if alias not in xkcd_single_allow:
                     continue
 
-            # XKCD may override CSS for the same alias; keep source for tie-breaking later
-            idx[alias] = {"name": alias, "hex": hx, "source": "xkcd"}
+            info2: Dict[str, Any] = {"name": alias, "hex": hx, "source": "xkcd"}
+
+            hue2 = _hex_to_hue_deg(hx)
+            if hue2 is not None:
+                info2["hue_deg"] = hue2
+
+            lab2 = _hex_to_lab(hx)
+            if lab2 is not None:
+                _L2, a2, b2 = lab2
+                info2["lab_hue_deg"] = _lab_hue_deg_from_ab(a2, b2)
+
+            idx[alias] = info2
 
     return idx
+
 
 def _max_ngram_from_index(color_index: Dict[str, Dict[str, Any]]) -> int:
     if not color_index:
         return 1
-    # cap at 4 to avoid runaway matching
     return min(max(len(a.split()) for a in color_index.keys()), 4)
 
 
@@ -292,9 +361,15 @@ def extract_mentions_free(doc_text: str, color_index: Dict[str, Dict[str, Any]])
                     "tok_start": i,
                     "tok_len": n,
                 }
-                hue = _safe_float(info.get("hue_deg"))
-                if hue is not None:
-                    matched["hue_deg"] = hue
+
+                lab_h = _safe_float(info.get("lab_hue_deg"))
+                if lab_h is not None:
+                    matched["lab_hue_deg"] = lab_h
+                else:
+                    hue = _safe_float(info.get("hue_deg"))
+                    if hue is not None:
+                        matched["hue_deg"] = hue
+
                 i += n
                 break
         if matched:
@@ -302,7 +377,6 @@ def extract_mentions_free(doc_text: str, color_index: Dict[str, Dict[str, Any]])
         else:
             i += 1
 
-    # de-dup by canonical name (current behavior)
     seen: set[str] = set()
     uniq: List[Mention] = []
     for h in hits:
@@ -452,16 +526,17 @@ def analyze_clauses_with_llm(
             nm = m.get("name")
             if not nm:
                 continue
-            hue = m.get("hue_deg")
+            # Keep backward compat: emit hue_deg if present (prefer lab_hue_deg).
+            hue = m.get("lab_hue_deg", m.get("hue_deg"))
             if pols.get(nm) == "LIKE":
                 it: LikeItem = {"family": nm}
                 if hue is not None:
-                    it["hue_deg"] = hue
+                    it["hue_deg"] = float(hue)
                 likes.append(it)
             elif pols.get(nm) == "DISLIKE":
                 it2: DislikeItem = {"family": nm}
                 if hue is not None:
-                    it2["hue_deg"] = hue
+                    it2["hue_deg"] = float(hue)
                 dislikes.append(it2)
 
     out: Dict[str, Any] = {"LIKES": likes, "DISLIKES": dislikes}
