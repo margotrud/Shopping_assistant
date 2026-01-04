@@ -1,101 +1,41 @@
 # =====================================================
-# Python
+# Project data
+# - Keep minimal, required demo assets under version control
+# - Ignore generated outputs and large local datasets
 # =====================================================
-__pycache__/
-*.py[cod]
-*$py.class
+
+# Generated outputs
+data/reports/
+data/tmp/
+data/cache/
+data/**/__pycache__/
+
+# Large exports (defensive)
+data/**/*.parquet
+data/**/*.feather
+data/**/*.arrow
+data/**/*.sqlite
+data/**/*.db
+
+# If you keep a full dataset locally, ignore it explicitly by name
+# (keep a small sample versioned instead)
+data/inventory_full*/
+data/**/inventory_full*.csv
+data/**/inventory_full*.json
+
 
 # =====================================================
-# Virtual environments
+# Build artifacts / opaque blobs (NOT for version control)
 # =====================================================
-.venv/
-venv/
-env/
-ENV/
+data/bin/
+data/**/_chip_cache/
+data/**/*.bin
 
 # =====================================================
-# Build / packaging
+# Generated scoring outputs (NOT for version control)
 # =====================================================
-build/
-dist/
-*.egg-info/
-.eggs/
+data/scored_cluster_*.csv
+data/**/scored_cluster_*.csv
+data/scores/
 
-# =====================================================
-# Pytest / coverage
-# =====================================================
-.pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
-
-# =====================================================
-# IDEs
-# =====================================================
-.idea/
-.vscode/
-*.iml
-
-# =====================================================
-# OS files
-# =====================================================
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# =====================================================
-# Jupyter / notebooks
-# =====================================================
-.ipynb_checkpoints/
-
-# =====================================================
-# Logs / temp
-# =====================================================
-*.log
-*.tmp
-*.swp
-
-# =====================================================
-# Project data (generated / local)
-# =====================================================
-data/
-!data/.gitkeep
-
-# Explicit heavy subfolders (defensive)
-data/**/*
-!data/.gitkeep
-
-# =====================================================
-# Model artifacts / training outputs
-# =====================================================
-models/
-checkpoints/
-runs/
-wandb/
-
-# =====================================================
-# Caches (general)
-# =====================================================
-*_cache/
-.cache/
-.cache/**
-
-# =====================================================
-# NLP / ML intermediate artifacts
-# =====================================================
-*.pkl
-*.joblib
-*.h5
-*.pt
-*.onnx
-
-# =====================================================
-# Windows specific
-# =====================================================
-*.lnk
-
-# =====================================================
-# Misc
-# =====================================================
-.env
-.env.*
+small_test.py

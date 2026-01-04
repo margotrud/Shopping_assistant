@@ -16,7 +16,6 @@ dependencies = [
 
   # Keep spaCy + model compatible (avoid W095)
   "spacy>=3.7,<3.8",
-  "en-core-web-sm==3.7.1",
 
   "pydantic>=1.7.4,!=1.8,!=1.8.1,<2",
   "matplotlib>=3.8",
