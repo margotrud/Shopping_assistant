@@ -39,3 +39,6 @@ data/**/scored_cluster_*.csv
 data/scores/
 
 small_test.py
+src/Shopping_assistant/nlp/models/
+
+data/Sephora_lipsticks_raw_items*.csv
