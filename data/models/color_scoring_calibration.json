@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "source": {
+    "enriched_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv",
+    "prototypes_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\color_prototypes_kmeans.csv",
+    "assignments_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\color_cluster_assignments.csv"
+  },
+  "deltaE_ref_q": 0.95,
+  "deltaE_ref": 14.36466145271401,
+  "thresholds": {
+    "C_lab": {
+      "low": 36.652529522668175,
+      "medium": 42.09814018094347,
+      "high": 49.80702109771229,
+      "very_high": 60.25492929058377
+    },
+    "H_lab_deg": {
+      "low": 25.969939593118962,
+      "medium": 29.93192790366794,
+      "high": 33.10545836895408,
+      "very_high": 36.8057203570953
+    },
+    "L_lab": {
+      "low": 39.65042107968112,
+      "medium": 44.54522732424454,
+      "high": 49.844050827617416,
+      "very_high": 55.77329043797519
+    },
+    "Y_rel": {
+      "low": 0.11041584440107591,
+      "medium": 0.1421889262919707,
+      "high": 0.1828839813877369,
+      "very_high": 0.23687247898628971
+    },
+    "a_lab": {
+      "low": 32.18076523200856,
+      "medium": 37.41130493300516,
+      "high": 43.832105823054825,
+      "very_high": 52.752705447336155
+    },
+    "b_lab": {
+      "low": 15.905921667870095,
+      "medium": 19.329553907607345,
+      "high": 23.996701987935747,
+      "very_high": 29.921919213650956
+    },
+    "colorfulness": {
+      "low": 0.10589574817140084,
+      "medium": 0.1207645769461504,
+      "high": 0.1420537653551541,
+      "very_high": 0.1725846665495741
+    },
+    "depth": {
+      "low": 50.15594917238259,
+      "medium": 55.45477267575546,
+      "high": 60.349578920318876,
+      "very_high": 65.61591145285703
+    },
+    "light_hsl": {
+      "low": 0.4117647058823529,
+      "medium": 0.4607843137254902,
+      "high": 0.5176470588235295,
+      "very_high": 0.5862745098039215
+    },
+    "sat_eff": {
+      "low": 0.806196095810145,
+      "medium": 1.015895082385789,
+      "high": 1.258929515844097,
+      "very_high": 1.5343983131568297
+    },
+    "sat_hsl": {
+      "low": 0.4330708661417323,
+      "medium": 0.5056179775280897,
+      "high": 0.5867301587301588,
+      "very_high": 0.7037701378508553
+    },
+    "warmth": {
+      "low": -1.1525096790061784,
+      "medium": 2.2253052134572187,
+      "high": 4.943332759267763,
+      "very_high": 8.341953984440789
+    }
+  },
+  "scale_iqr": {
+    "C_lab": 22.476674473369727,
+    "H_lab_deg": 12.47602906032867,
+    "L_lab": 17.235846400430958,
+    "Y_rel": 0.1239799629585284,
+    "a_lab": 20.62944803906401,
+    "b_lab": 14.441803189641789,
+    "colorfulness": 0.06339079831761636,
+    "depth": 17.235846400430965,
+    "light_hsl": 0.18627450980392157,
+    "sat_eff": 0.741864103122226,
+    "sat_hsl": 0.2674117100932861,
+    "warmth": 10.885363571054224
+  },
+  "scale_std": {
+    "C_lab": 16.474458008676482,
+    "H_lab_deg": 56.28398896729196,
+    "L_lab": 13.00089044480179,
+    "Y_rel": 0.11228249969742377,
+    "a_lab": 14.462569822151544,
+    "b_lab": 12.057196670464894,
+    "colorfulness": 0.049264530526229505,
+    "depth": 13.00089044480179,
+    "light_hsl": 0.13508119811986294,
+    "sat_eff": 0.472367324373688,
+    "sat_hsl": 0.1975731940437804,
+    "warmth": 9.911524440756565
+  },
+  "notes": {
+    "constraint_thresholds": "Fixed quantiles computed on reference dataset; DO NOT recompute at scoring time.",
+    "penalty_normalization": "gap / scale_iqr[dim] (fallback scale_std).",
+    "deltaE_normalization": "deltaE / deltaE_ref"
+  }
+}

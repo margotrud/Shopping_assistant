@@ -1,0 +1,14 @@
+{
+  "model": "logistic_regression_pairwise",
+  "trained_at": "2025-12-22T15:33:56.710690",
+  "features": [
+    "delta_L",
+    "delta_C",
+    "delta_H"
+  ],
+  "weights": {
+    "w_L": -0.09514084619430806,
+    "w_C": -0.08219221329872906,
+    "w_H": 0.03010040849096368
+  }
+}
