@@ -40,11 +40,11 @@ from Shopping_assistant.nlp.resolve.axis_merge import merge_axis_intents
 from Shopping_assistant.nlp.resolve.axis_thresholds import thresholds_from_decisions
 from Shopping_assistant.nlp.resolve.scoring_adapter import build_constraints_blob_from_thresholds
 
-from Shopping_assistant.reco.recommend import (
-    recommend_from_text,
-    _select_like_cluster_id_from_text,
-    _neighbor_clusters_from_like_cluster,
-)
+# IMPORTANT:
+# - _select_like_cluster_id_from_text was removed.
+# - We now use the dynamic NLP-driven anchor implemented in reco/recommend.py
+from Shopping_assistant.reco.recommend import recommend_from_text
+import Shopping_assistant.reco.recommend as recommend_mod
 
 
 # -----------------------------
@@ -81,11 +81,16 @@ def _col(df: pd.DataFrame, *names: str) -> str | None:
 
 def summarize(scored: pd.DataFrame, k: int = 20) -> dict:
     top = scored.head(k).copy()
+
     c_light = _col(top, "c1__light_hsl", "light_hsl")
     c_sat_eff = _col(top, "c2__sat_eff", "sat_eff")
+
+    score_col = "score_total" if "score_total" in top.columns else ("score" if "score" in top.columns else None)
+
     return {
         "k": k,
         "n_rows": int(len(scored)),
+        "mean_score": float(top[score_col].mean()) if score_col else None,
         "mean_light_like": float(top[c_light].mean()) if c_light else None,
         "mean_sat_eff": float(top[c_sat_eff].mean()) if c_sat_eff else None,
         "mean_constraint_penalty_norm": float(top["constraint_penalty_norm"].mean())
@@ -119,14 +124,19 @@ def debug_constraint_effect(scored: pd.DataFrame, *, calibration: dict | None = 
 
 
 def compare_topk(scored_A: pd.DataFrame, scored_B: pd.DataFrame, k: int = 20) -> None:
-    need = {"shade_id", "score"}
-    if not need.issubset(set(scored_A.columns)) or not need.issubset(set(scored_B.columns)):
+    # support both score / score_total
+    sA = "score_total" if "score_total" in scored_A.columns else "score"
+    sB = "score_total" if "score_total" in scored_B.columns else "score"
+
+    needA = {"shade_id", sA}
+    needB = {"shade_id", sB}
+    if not needA.issubset(set(scored_A.columns)) or not needB.issubset(set(scored_B.columns)):
         print("[debug] compare_topk skipped: missing shade_id/score")
         return
 
-    a = scored_A.head(k)[["shade_id", "score"]].set_index("shade_id")
-    b = scored_B.head(k)[["shade_id", "score"]].set_index("shade_id")
-    inter = a.join(b, how="inner", lsuffix="_A", rsuffix="_B")
+    a = scored_A.head(k)[["shade_id", sA]].set_index("shade_id").rename(columns={sA: "score_A"})
+    b = scored_B.head(k)[["shade_id", sB]].set_index("shade_id").rename(columns={sB: "score_B"})
+    inter = a.join(b, how="inner")
     inter["delta"] = inter["score_B"] - inter["score_A"]
 
     print("[debug] topk intersection:", len(inter), "/", k)
@@ -190,8 +200,10 @@ def main() -> None:
     print("\nBLOB (constraints):", blob_B)
 
     # 2) AB-critical: freeze like_cluster_id + candidate pool from BASE ONLY
-    like_cluster_id = _select_like_cluster_id_from_text(text_base, assets=assets)
-    candidate_cluster_ids = _neighbor_clusters_from_like_cluster(
+    #    (dynamic: derived from NLP mentions -> world palette -> Lab -> prototypes)
+    nlp_base = interpret_nlp(text_base, debug=False)
+    like_cluster_id = recommend_mod._select_like_cluster_id_from_nlp(nlp_base, assets=assets)  # type: ignore[attr-defined]
+    candidate_cluster_ids = recommend_mod._neighbor_clusters_from_like_cluster(  # type: ignore[attr-defined]
         like_cluster_id,
         assets=assets,
         topn=4,
@@ -209,6 +221,7 @@ def main() -> None:
         topk=50,
         constraints_blob_override="",
         lambda_preference=0.0,
+        debug=False,
     )
     scored_A = _drop_non_lipstick(scored_A)
     _maybe_print_cluster_profile(scored_A, label="A")
@@ -222,6 +235,7 @@ def main() -> None:
         topk=50,
         constraints_blob_override=blob_B,
         lambda_preference=0.0,
+        debug=False,
     )
     scored_B = _drop_non_lipstick(scored_B)
     _maybe_print_cluster_profile(scored_B, label="B")
@@ -244,6 +258,7 @@ def main() -> None:
         "brand_name",
         "product_name",
         "shade_name",
+        "score_total",
         "score",
         "preference_score",
         "constraint_penalty_norm",
