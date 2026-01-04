@@ -14,8 +14,9 @@ dependencies = [
   "scikit-learn>=1.3",
   "joblib>=1.3",
 
-  # Keep spaCy + model compatible (avoid W095)
-  "spacy>=3.7,<3.8",
+  # spaCy runtime (NLP pipeline depends on it)
+  "spacy>=3.8,<3.9",
+  "en-core-web-sm>=3.8.0,<3.9",
 
   "pydantic>=1.7.4,!=1.8,!=1.8.1,<2",
   "matplotlib>=3.8",
@@ -23,12 +24,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4"]
-embeddings = ["sentence-transformers>=2.5"]
-scrape = ["requests>=2.31", "beautifulsoup4>=4.12", "pillow>=10.0"]
+dev = [
+  "pytest>=7.4",
+]
+embeddings = [
+  "sentence-transformers>=2.5",
+]
+scrape = [
+  "requests>=2.31",
+  "beautifulsoup4>=4.12",
+  "pillow>=10.0",
+]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

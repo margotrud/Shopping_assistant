@@ -1,151 +1,208 @@
-# Shopping Assistant V8 — NLP-to-Scoring Lipstick Recommender
+# Shopping Assistant — NLP-Driven Preference Resolution & Product Ranking
 
-## Project purpose
+## Overview
 
-This is a **portfolio project** designed to demonstrate:
-- NLP interpretation of free-text preferences
-- Projection of semantic intents onto numeric axes
-- Constraint-based scoring and ranking
-- Deterministic, testable ML-style pipelines
+This project demonstrates an **end-to-end data science pipeline** that transforms **free-form natural language preferences** into **numeric constraints** and applies them to **rank real products**.
 
-It is **not** intended to be a production system or deployed service.
+The focus is **not UI or deployment**, but:
+- robust NLP interpretation,
+- explicit preference resolution,
+- interpretable numeric modeling,
+- deterministic scoring,
+- and testable engineering.
 
----
-
-## What it does
-
-- Parses natural language preferences (likes, dislikes, modifiers)
-- Resolves polarity and intent at clause level
-- Projects intents onto numeric color axes (brightness, depth, vibrancy, clarity, etc.)
-- Builds numeric threshold constraints from resolved intents
-- Scores and ranks lipstick shades from a real Sephora inventory
-- Outputs reproducible top‑K recommendations
+The domain used for demonstration is **lipstick recommendation**, chosen for its **high semantic ambiguity** (color, intensity, exclusions, trade-offs).
 
 ---
 
-## High-level pipeline
+## What This Project Demonstrates (for Recruiters)
+
+**Core DS / ML Engineering skills:**
+- Natural language → structured representation
+- Preference resolution under ambiguity and negation
+- Mapping language to numeric axes
+- Multi-constraint scoring and ranking
+- Deterministic, testable pipelines
+- Data enrichment and calibration
+- Clear separation between modeling, data, and orchestration
+
+**What it deliberately does NOT try to be:**
+- A production product
+- A deployed system
+- A UI-heavy demo
+
+This is a **technical portfolio project**, optimized for **code review**, **reasoning clarity**, and **signal density**.
+
+---
+
+## High-Level Pipeline
 
 ```
 User text
-   ↓
-Clause splitting & polarity detection
-   ↓
-Intent resolution (likes / dislikes)
-   ↓
-Axis projection & merge
-   ↓
-Numeric thresholds
-   ↓
-Constraint-based scoring
-   ↓
-Ranked shades (CSV + console)
+  ↓
+NLP interpretation
+  ↓
+Preference resolution (likes / dislikes / intensity)
+  ↓
+Projection to numeric axes (brightness, depth, saturation, etc.)
+  ↓
+Constraint merging & thresholds
+  ↓
+Deterministic scoring against enriched product inventory
+  ↓
+Ranked recommendations
 ```
 
 ---
 
-## Repository structure
+## Example
+
+**Input**
+```
+"I want a deep red lipstick but not too bright"
+```
+
+**Output**
+- Structured constraints on color axes (depth ↑, brightness ↓)
+- Ranked list of matching shades
+- Deterministic ordering (reproducible across runs)
+
+---
+
+## Repository Structure
 
 ```
 src/Shopping_assistant/
-├── nlp/
-│   ├── interpretation/     # clause parsing, polarity, mentions
-│   ├── resolve/            # axis projection, merge, thresholds, adapters
-│   └── schema.py           # shared NLP dataclasses
+│
+├── nlp/                  # NLP interpretation & preference resolution
+│   ├── interpretation/   # Clause parsing, mention extraction
+│   ├── resolve/          # Axis projection, merge logic, thresholds
+│   └── schema.py         # Typed NLP data structures
+│
 ├── color/
-│   ├── scoring.py          # constraint evaluation & scoring
-│   └── features.py         # numeric color features
-├── reco/
-│   └── recommend.py        # end-to-end recommendation entrypoint
-├── io/
-│   └── assets.py           # inventory & calibration loading
-tests/
-│   ├── test_*contract.py   # functional contracts
-│   ├── test_*invariants.py # determinism & stability checks
+│   ├── scoring.py        # Numeric scoring engine
+│   ├── distance.py       # Color distance functions
+│   └── calibration/      # Calibration utilities
+│
+├── reco/                 # Recommendation orchestration
+│   └── recommend.py
+│
+├── ml/                   # Calibration, clustering, analysis scripts
+├── io/                   # Asset loading & validation
+├── utils/                # Shared utilities
+│
+Scripts/
+├── demo_reco.py          # One-command end-to-end demo
+├── reco_ab.py            # A/B & diagnostic experiments
+│
 data/
-├── inventory/              # enriched Sephora lipstick data (CSV)
-└── reports/                # demo outputs
-scripts/
-└── demo_reco.py             # one-command demo
+├── enriched_data/        # Product inventory with numeric axes
+├── calibration/          # Axis calibration files
+├── prototypes/           # Color prototypes
+└── assignments/          # Prototype ↔ product mappings
+│
+tests/
+├── test_scoring_invariants.py
+├── test_color_ranking_goldens.py
+├── test_reco_contract.py
+└── ...
 ```
 
 ---
 
-## Installation
+## Data
 
-From the repository root:
+The project ships with **real, pre-enriched data** to ensure full reproducibility.
 
+- **Enriched inventory**  
+  Lipstick shades with numeric representations:
+  - color spaces (Lab / HSL / HSV)
+  - derived axes (brightness, depth, vibrancy, clarity, etc.)
+
+- **Calibration files**  
+  JSON files defining:
+  - axis cutpoints
+  - strength mappings
+  - scoring weights
+
+- **Prototypes & assignments**  
+  Used for clustering and interpretability experiments.
+
+No external APIs or live scraping are required to run the pipeline.
+
+---
+
+## Quickstart (Reproducible)
+
+### 1. Install
 ```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -U pip
 pip install -e .
 ```
 
-### Optional NLP dependencies (spaCy)
-
-Some NLP components rely on spaCy.
-
+### 2. Run demo
 ```bash
-pip install spacy
-python -m spacy download en_core_web_sm
+python Scripts/demo_reco.py   --text "I want a deep red lipstick but not too bright"
 ```
 
-If spaCy is not installed, the code fails explicitly via guarded imports.
-
----
-
-## Run a demo
-
-One command demo:
-
-```bash
-python scripts/demo_reco.py --text "I want a deep red lipstick but not too bright"
-```
-
-What it does:
-- Runs the full NLP → scoring pipeline
-- Prints a top‑10 table to the console
-- Writes `data/reports/demo_top10.csv`
-
-If no `--text` is provided, the script runs several representative examples.
-
----
-
-## Run tests
-
+### 3. Run tests
 ```bash
 pytest -q
 ```
 
-Test suite focuses on:
-- Deterministic scoring
-- Contract-level behavior
-- Invariant preservation across refactors
+---
+
+## Design Principles
+
+- **Deterministic by default**  
+  Same input → same output.
+
+- **Explicit over implicit**  
+  No hidden heuristics, no black-box magic.
+
+- **Numeric first**  
+  Language is translated into numeric constraints as early as possible.
+
+- **Test-driven**  
+  Ranking stability and invariants are enforced by tests.
+
+- **Debuggable**  
+  Intermediate representations are inspectable at every step.
 
 ---
 
-## Key files to review
+## Why Lipstick?
 
-- `src/Shopping_assistant/reco/recommend.py`  
-  End‑to‑end recommendation orchestration.
+Lipstick is a **hard NLP problem**, not a toy domain:
+- dense adjectives (“deep”, “bright”, “soft”, “muted”)
+- frequent negations (“not too bright”)
+- subjective trade-offs
+- overlapping color semantics
 
-- `src/Shopping_assistant/nlp/resolve/`  
-  Axis projection, intent merge, threshold logic.
-
-- `src/Shopping_assistant/color/scoring.py`  
-  Constraint evaluation and ranking mechanics.
-
-- `tests/`  
-  Contract tests and scoring invariants.
+This makes it ideal to demonstrate **preference modeling**, **constraint resolution**, and **ranking under ambiguity**.
 
 ---
 
-## Notes
+## Limitations
 
-- The project prioritizes **clarity, determinism, and testability**
-- No UI is provided; focus is on pipeline logic and architecture
-- All data and artifacts are included to allow full reproducibility
+- English-only NLP
+- Offline, pre-enriched dataset
+- No user personalization or learning loop
+- No production deployment layer
+
+---
+
+## Status
+
+- ✔ End-to-end pipeline functional
+- ✔ Fully reproducible
+- ✔ Covered by tests
+- ✔ Suitable for technical review
+
+---
+
+## Author
+
+**Margot**  
+Data Scientist / ML Engineer  
+
+This project was built as a **technical portfolio** to demonstrate applied NLP, numeric modeling, and recommendation logic.
