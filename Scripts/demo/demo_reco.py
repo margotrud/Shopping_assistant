@@ -22,7 +22,7 @@ def _load_assets_defaults():
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--text", type=str, default="I want a deep red lipstick but not too bright")
+    p.add_argument("--text", type=str, default="I want a pink bright lipstick")
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--out", type=str, default="data/reports/demo_topk.csv")
     args = p.parse_args()

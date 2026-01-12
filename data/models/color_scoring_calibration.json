@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "source": {
     "enriched_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv",
     "prototypes_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\color_prototypes_kmeans.csv",
@@ -7,6 +7,19 @@
   },
   "deltaE_ref_q": 0.95,
   "deltaE_ref": 14.36466145271401,
+
+  "dims": {
+    "light_hsl": {
+      "level_mode": "relative",
+      "relative_quantiles": {
+        "low": 0.70,
+        "medium": 0.80,
+        "high": 0.90,
+        "very_high": 0.95
+      }
+    }
+  },
+
   "thresholds": {
     "C_lab": {
       "low": 36.652529522668175,
@@ -110,7 +123,7 @@
     "warmth": 9.911524440756565
   },
   "notes": {
-    "constraint_thresholds": "Fixed quantiles computed on reference dataset; DO NOT recompute at scoring time.",
+    "constraint_thresholds": "Fixed quantiles computed on reference dataset; at scoring time, dims may optionally interpret level cutpoints relatively (see dims.*.level_mode).",
     "penalty_normalization": "gap / scale_iqr[dim] (fallback scale_std).",
     "deltaE_normalization": "deltaE / deltaE_ref"
   }

@@ -95,6 +95,43 @@ def _l2_normalize_rows(np: Any, X: Any, *, eps: float = 1e-12) -> Any:
     return X / (norms + float(eps))
 
 
+def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str, torch: Any) -> Any:
+    device = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
+
+    # 1) Chemin robuste: construire les modules ST explicitement
+    try:
+        from sentence_transformers import models  # type: ignore
+
+        word = models.Transformer(
+            model_name,
+            model_args={
+                "low_cpu_mem_usage": False,
+                "device_map": None,
+            },
+        )
+        pooling = models.Pooling(
+            word.get_word_embedding_dimension(),
+            pooling_mode_mean_tokens=True,
+        )
+        model = SentenceTransformer(modules=[word, pooling], device=device)
+    except Exception:
+        # 2) Fallback: constructeur classique
+        try:
+            model = SentenceTransformer(
+                model_name,
+                device=device,
+                model_kwargs={"low_cpu_mem_usage": False, "device_map": None},
+            )
+        except TypeError:
+            model = SentenceTransformer(model_name, device=device)
+
+    try:
+        model.eval()
+    except Exception:
+        pass
+
+    return model
+
 # ---------------------------------------------------------------------------
 # Clause-level polarity decision
 # ---------------------------------------------------------------------------
@@ -256,6 +293,12 @@ def make_free_polarity_fn(
         purpose="Needed for make_free_polarity_fn() to build dense embedding arrays and normalize them.",
     )
 
+    torch = require(
+        "torch",
+        extra="torch",
+        purpose="Needed for make_free_polarity_fn() to select device and avoid meta-tensor loading.",
+    )
+
     st = require(
         "sentence_transformers",
         extra="sentence-transformers",
@@ -270,7 +313,12 @@ def make_free_polarity_fn(
     if min_margin_f < 0.0:
         min_margin_f = 0.0
 
-    encoder = SentenceTransformer(model_name)
+    # ✅ FIX: safe loading (prevents meta-tensor crash)
+    encoder = _load_sentence_transformer_safe(
+        SentenceTransformer=SentenceTransformer,
+        model_name=model_name,
+        torch=torch,
+    )
 
     anchor_like = "The request asks to include items matching the mention."
     anchor_dislike = "The request asks to exclude items matching the mention."

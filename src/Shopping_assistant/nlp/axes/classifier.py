@@ -1,4 +1,4 @@
-# src/Shopping_assistant/nlp/axis_classifier_embed.py
+# src/Shopping_assistant/nlp/axes/classifier.py
 from __future__ import annotations
 
 """
@@ -102,6 +102,44 @@ def _cosine_sim_row(np: Any, a: Any, B: Any) -> Any:
     return B @ a
 
 
+def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str, torch: Any) -> Any:
+    device = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
+
+    # 1) Chemin robuste: construire les modules ST explicitement
+    try:
+        from sentence_transformers import models  # type: ignore
+
+        word = models.Transformer(
+            model_name,
+            model_args={
+                "low_cpu_mem_usage": False,
+                "device_map": None,
+            },
+        )
+        pooling = models.Pooling(
+            word.get_word_embedding_dimension(),
+            pooling_mode_mean_tokens=True,
+        )
+        model = SentenceTransformer(modules=[word, pooling], device=device)
+    except Exception:
+        # 2) Fallback: constructeur classique
+        try:
+            model = SentenceTransformer(
+                model_name,
+                device=device,
+                model_kwargs={"low_cpu_mem_usage": False, "device_map": None},
+            )
+        except TypeError:
+            model = SentenceTransformer(model_name, device=device)
+
+    try:
+        model.eval()
+    except Exception:
+        pass
+
+    return model
+
+
 @lru_cache(maxsize=8)
 def make_axis_classifier_fn(
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
@@ -115,12 +153,18 @@ def make_axis_classifier_fn(
         Build an offline axis classifier using embedding similarity to axis prototypes.
     """
     np = require("numpy", extra="numpy", purpose="axis embedding classifier")
+    torch = require("torch", extra="torch", purpose="axis embedding classifier (device selection)")
     st = require("sentence_transformers", extra="sentence-transformers", purpose="axis embedding classifier")
     SentenceTransformer = getattr(st, "SentenceTransformer", None)
     if SentenceTransformer is None:
         raise RuntimeError("sentence_transformers.SentenceTransformer not found")
 
-    model = SentenceTransformer(model_name)
+    # ✅ FIX: safe loading (prevents meta-tensor crash)
+    model = _load_sentence_transformer_safe(
+        SentenceTransformer=SentenceTransformer,
+        model_name=model_name,
+        torch=torch,
+    )
 
     axes: List[Axis] = list(_AXIS_PROTOTYPES.keys())
     axis_texts: List[str] = []
@@ -133,6 +177,7 @@ def make_axis_classifier_fn(
         axis_offsets.append((cur, cur + len(protos)))
         cur += len(protos)
 
+    # Normalize embeddings once (faster + stable cosine)
     P = model.encode(axis_texts, convert_to_numpy=True, show_progress_bar=False)
     P = _l2_normalize_rows(np, P)
 
@@ -160,7 +205,6 @@ def make_axis_classifier_fn(
             sims = _cosine_sim_row(np, v, P[a0:a1])
             sims_axis[ax] = float(np.max(sims))
 
-        # sort
         ranked = sorted(sims_axis.items(), key=lambda x: x[1], reverse=True)
         best_ax, best_sim = ranked[0]
         second_sim = ranked[1][1] if len(ranked) > 1 else -1.0

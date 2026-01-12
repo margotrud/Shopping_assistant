@@ -139,6 +139,7 @@ _ALLOWED_DIMS = {
 
 _ALLOWED_OPS = {"<=", ">="}
 
+# kept for backwards-compat/debug; NOT used for threshold resolution anymore
 _LEVEL_TO_Q = {
     "low": 0.35,
     "medium": 0.50,
@@ -358,7 +359,7 @@ def _check_constraint(c: Constraint) -> None:
     if c.op not in _ALLOWED_OPS:
         raise ValueError(f"Unknown op '{c.op}'.")
     if c.cutpoint is None:
-        if c.level not in _LEVEL_TO_Q:
+        if c.level not in {"low", "medium", "high", "very_high"}:
             raise ValueError(f"Unknown level '{c.level}'.")
     else:
         if not np.isfinite(c.cutpoint):
@@ -423,7 +424,7 @@ def _delta_e_norm(deltaE: np.ndarray, cal: dict) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------
-# Constraints (fixed thresholds + normalized penalties)
+# Constraints (absolute vs relative thresholds + normalized penalties)
 # ---------------------------------------------------------------------
 
 
@@ -434,6 +435,86 @@ def _constraint_threshold_fixed(cal: dict, dim: str, level: str) -> float:
         raise KeyError(
             f"Missing fixed threshold for dim={dim!r} level={level!r} in calibration."
         ) from e
+
+
+def _dim_cfg(cal: dict | None, dim: str) -> dict:
+    if not cal:
+        return {}
+    dims = cal.get("dims") or cal.get("dimensions") or {}
+    if not isinstance(dims, dict):
+        return {}
+    cfg = dims.get(dim) or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _dim_level_mode(cal: dict | None, dim: str) -> str:
+    cfg = _dim_cfg(cal, dim)
+    mode = cfg.get("level_mode") or cfg.get("mode") or "absolute"
+    return str(mode).strip().lower()
+
+
+def _dim_relative_quantiles(cal: dict | None, dim: str) -> dict[str, float]:
+    cfg = _dim_cfg(cal, dim)
+    q = cfg.get("relative_quantiles")
+    if isinstance(q, dict) and q:
+        out: dict[str, float] = {}
+        for k, v in q.items():
+            try:
+                out[str(k).lower()] = float(v)
+            except Exception:
+                continue
+        if out:
+            return out
+    # fallback defaults (only used when calibration doesn't specify it)
+    return {"low": 0.70, "medium": 0.80, "high": 0.90, "very_high": 0.95}
+
+
+def _constraint_threshold_relative(
+    work: pd.DataFrame,
+    *,
+    cal: dict,
+    dim: str,
+    level: str,
+    op: str,
+) -> float:
+    if dim not in work.columns or work.empty:
+        raise KeyError(f"Cannot compute relative threshold: missing dim '{dim}' or empty pool.")
+    vals = pd.to_numeric(work[dim], errors="coerce").dropna()
+    if vals.empty:
+        raise ValueError(f"Cannot compute relative threshold: no finite values for dim '{dim}'.")
+
+    qmap = _dim_relative_quantiles(cal, dim)
+    q = float(qmap.get(str(level).lower(), 0.80))
+
+    # For "<=" constraints, "low/medium/high" should refer to the LOWER tail (darker/less),
+    # so we flip to (1-q). For ">=", we keep q (upper tail).
+    if str(op).strip() == "<=":
+        q = 1.0 - q
+
+    q = min(0.999, max(0.001, q))
+    return float(vals.quantile(q))
+
+
+def _constraint_threshold_dynamic(work: pd.DataFrame, cal: dict, c: "Constraint") -> float:
+    """
+    Does:
+        Resolve threshold for a constraint.
+        - numeric cutpoint: use directly
+        - level-based: absolute mode uses calibration["thresholds"][dim][level]
+                      relative mode uses quantiles over current candidate pool (work[dim])
+    """
+    if c.cutpoint is not None:
+        return float(c.cutpoint)
+
+    if c.level is None:
+        raise ValueError(f"Constraint has neither cutpoint nor level: {c}")
+
+    mode = _dim_level_mode(cal, c.dim)
+    if mode == "relative":
+        return _constraint_threshold_relative(work, cal=cal, dim=c.dim, level=str(c.level), op=str(c.op))
+
+    # default absolute behavior
+    return _constraint_threshold_fixed(cal, c.dim, str(c.level))
 
 
 def _constraint_scale(cal: dict, dim: str) -> float:
@@ -447,6 +528,7 @@ def _constraint_scale(cal: dict, dim: str) -> float:
 
 
 def _constraint_penalty(values: np.ndarray, op: str, threshold: float) -> np.ndarray:
+    # continuous hinge penalty (0 if satisfied; grows with violation)
     if op == "<=":
         return np.maximum(0.0, values - threshold)
     return np.maximum(0.0, threshold - values)
@@ -481,25 +563,29 @@ def _apply_constraints(
         if c.dim not in work.columns:
             raise KeyError(f"Constraint dim '{c.dim}' missing from work df columns.")
 
-        thr = float(c.cutpoint) if c.cutpoint is not None else _constraint_threshold_fixed(
-            calibration, c.dim, c.level  # type: ignore[arg-type]
-        )
+        # ✅ dynamic threshold resolution (absolute or relative) — NO hardcoded cutpoints
+        thr = _constraint_threshold_dynamic(work, calibration, c)
         scale = _constraint_scale(calibration, c.dim)
 
-        vals = work[c.dim].to_numpy(float)
-        gap = _constraint_penalty(vals, c.op, thr)
-        gap_norm = gap / scale
+        vals = pd.to_numeric(work[c.dim], errors="coerce").to_numpy(float)
+        # NaNs become NaN; hinge on NaN => NaN; replace with 0 to avoid poisoning total
+        vals = np.where(np.isfinite(vals), vals, np.nan)
+
+        gap = _constraint_penalty(np.nan_to_num(vals, nan=thr), c.op, float(thr))
+        gap_norm = gap / float(scale)
 
         pen = float(c.weight) * gap_norm
         total += pen
 
         breakdown[f"penalty_{i}__{c.dim}{c.op}{_constraint_suffix(c)}"] = pen
-        extras[f"c{i}__{c.dim}"] = vals
+        extras[f"c{i}__{c.dim}"] = np.nan_to_num(vals, nan=float(thr))
 
     return total, pd.DataFrame(breakdown, index=work.index), pd.DataFrame(extras, index=work.index)
 
 
 def _constraint_threshold(calibration: dict, c: Constraint) -> float:
+    # Used by joint feasibility relaxation for NUMERIC cutpoints only.
+    # For level-based constraints, keep absolute calibration thresholds (stable semantics).
     if c.cutpoint is not None:
         return float(c.cutpoint)
     return _constraint_threshold_fixed(calibration, c.dim, c.level)  # type: ignore[arg-type]
@@ -548,10 +634,8 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
         Make the *conjunction* (AND) of constraints feasible in the candidate pool by relaxing
         ONLY numeric cutpoints (c.cutpoint is not None), and doing it *jointly*.
 
-    Key changes:
-        - Default min_feasible_frac lowered to 0.05 to reduce forced relaxation.
-        - Optional clamping of numeric cutpoints within calibrated min/max per dim to avoid
-          drifting beyond the semantics of low/medium/high/very_high.
+    Notes:
+        - Level-based constraints are NOT relaxed here. Relative mode is handled in _apply_constraints.
     """
     if not constraints:
         return constraints
@@ -618,8 +702,6 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
                 if c.dim not in bounds_cache:
                     bounds_cache[c.dim] = _calib_bounds_for_dim(calibration, dim=c.dim)
                 lo, hi = bounds_cache[c.dim]
-                # For "<=" (caps): never relax above calibrated max (typically very_high).
-                # For ">=" (floors): never relax below calibrated min (typically low).
                 if c.op == "<=" and hi is not None and np.isfinite(hi):
                     new_thr = min(float(new_thr), float(hi))
                 if c.op == ">=" and lo is not None and np.isfinite(lo):
@@ -693,7 +775,7 @@ def score_shades(
     deltaE = _delta_e_to_proto(work, proto_row)
     deltaE_n = _delta_e_norm(deltaE, calibration)
 
-    # ✅ JOINT feasibility: avoid empty intersection of constraints.
+    # ✅ JOINT feasibility: relax ONLY numeric cutpoints (not level-based); keeps semantics stable.
     constraints_eff = _snap_numeric_cutpoints_to_joint_feasibility(
         work,
         query.constraints,
@@ -710,12 +792,6 @@ def score_shades(
     # -----------------------------
     # Preference term (FIXED)
     # -----------------------------
-    # Old behavior (incorrect):
-    #   preference_score was a SIGNED linear combination of signed deltas, which can reward moving away
-    #   from the prototype depending on the sign of weights.
-    #
-    # New behavior:
-    #   preference_score is NEGATIVE distance-like (0 is best), so higher is better when multiplied by lambda_preference.
     if float(lambda_preference) != 0.0:
         if preference_weights is None:
             raise ValueError(

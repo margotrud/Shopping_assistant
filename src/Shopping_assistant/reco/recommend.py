@@ -46,6 +46,7 @@ def _parse_constraint_token(token: str) -> Constraint:
 # Dynamic like_cluster_id selection (NO static color tables)
 # ---------------------------------------------------------------------
 
+
 def _hex_to_rgb01(hx: str) -> Optional[Tuple[float, float, float]]:
     if not isinstance(hx, str):
         return None
@@ -118,14 +119,12 @@ def _anchor_lab_from_nlp(nlp_res) -> Optional[Tuple[float, float, float]]:
         conf = float(getattr(m, "confidence", 0.0) or 0.0)
         meta = getattr(m, "meta", {}) or {}
 
-        # 1) direct lab fields if ever present
         L0 = meta.get("lab_L", None)
         a0 = meta.get("lab_a", None)
         b0 = meta.get("lab_b", None)
         if isinstance(L0, (int, float)) and isinstance(a0, (int, float)) and isinstance(b0, (int, float)):
             lab = (float(L0), float(a0), float(b0))
         else:
-            # 2) lookup by canonical -> hex -> lab
             lab = None
             canon = str(getattr(m, "canonical", "") or "").strip().lower()
             if canon:
@@ -171,8 +170,7 @@ def _select_like_cluster_id_from_nlp(nlp_res, *, assets: AssetBundle) -> int:
     b = p["b_lab"].astype(float).to_numpy(float)
     cid = p["cluster_id"].to_numpy(int)
 
-    # ✅ Distance in Lab (avoid hue-angle ambiguity with nude/beige)
-    # Weight L lower than a/b to keep hue/chroma more important than lightness.
+    # Distance in Lab; downweight L so hue/chroma dominate.
     wL = 0.25
     d2 = wL * (L - float(L0)) ** 2 + (a - float(a0)) ** 2 + (b - float(b0)) ** 2
 
@@ -234,6 +232,45 @@ def _print_axis_stats(df: pd.DataFrame, axis: str) -> None:
     )
 
 
+def _all_clusters_from_assets(assets: AssetBundle) -> list[int]:
+    """
+    Does:
+        Return all cluster_ids available for scoring, preferring assignments/inventory coverage.
+        No static assumptions.
+    """
+    # Prefer assignments (closest to actual inventory mapping)
+    if hasattr(assets, "assignments") and isinstance(getattr(assets, "assignments", None), pd.DataFrame):
+        a = assets.assignments
+        if "cluster_id" in a.columns:
+            vals = a["cluster_id"].dropna()
+            if len(vals):
+                return sorted({int(x) for x in vals.astype(int).tolist()})
+
+    # Fallback: prototypes
+    prot = assets.prototypes
+    if "cluster_id" in prot.columns:
+        vals = prot["cluster_id"].dropna()
+        if len(vals):
+            return sorted({int(x) for x in vals.astype(int).tolist()})
+
+    return []
+
+
+def _has_effective_thresholds(ths: dict[Axis, AxisThreshold] | None) -> bool:
+    """
+    Does:
+        Determine whether thresholds would have non-zero impact.
+        Dynamic: relies on weights, not axis names or hardcoded lists.
+    """
+    if not ths:
+        return False
+    for t in ths.values():
+        w = float(getattr(t, "weight", 0.0) or 0.0)
+        if w > 0.0:
+            return True
+    return False
+
+
 def recommend_from_text(
     text: str,
     *,
@@ -263,7 +300,7 @@ def recommend_from_text(
     if like_cluster_id is None:
         like_cluster_id = _select_like_cluster_id_from_nlp(nlp_res, assets=assets)
 
-    # 2) Candidate pool
+    # 2) Initial candidate pool (may be overridden by constraints after they are built)
     if candidate_cluster_ids is None:
         candidate_cluster_ids = _neighbor_clusters_from_like_cluster(
             int(like_cluster_id),
@@ -273,6 +310,9 @@ def recommend_from_text(
     candidate_cluster_ids = [int(x) for x in candidate_cluster_ids]
 
     # 3) Thresholds / blob
+    ths: dict[Axis, AxisThreshold] | None
+    constraints_blob: str
+
     if constraints_blob_override is not None:
         constraints_blob = str(constraints_blob_override).strip()
         ths = None
@@ -286,6 +326,17 @@ def recommend_from_text(
             ths = thresholds_from_decisions(decisions)
 
         constraints_blob = build_constraints_blob_from_thresholds(ths, calibration=assets.calibration)
+
+    # 3b) Constraint-aware pool expansion (applies to BOTH override and computed thresholds)
+    # Rule: if constraints have effective weight OR blob is non-empty -> do not lock to local neighbors.
+    has_constraints = _has_effective_thresholds(ths) or bool(constraints_blob)
+    if has_constraints:
+        all_clusters = _all_clusters_from_assets(assets)
+        if all_clusters:
+            candidate_cluster_ids = all_clusters
+        else:
+            # If assets are incomplete, fall back to whatever we already had.
+            candidate_cluster_ids = [int(x) for x in candidate_cluster_ids]
 
     # ---- DEBUG (NLP → thresholds + anchor)
     if debug:

@@ -109,13 +109,27 @@ def _degree_adverbs(tok: Token) -> List[Token]:
 
 def _degree_strength(tok: Token) -> Strength:
     deg = _degree_adverbs(tok)
+
+    # No degree adverb => default strength
     if not deg:
         return Strength.STRONG if _has_negation(tok) else Strength.MED
+
+    # Multiple degree adverbs => stronger emphasis ("really very bright")
     if len(deg) >= 2:
         return Strength.STRONG
-    if deg[0].lemma_.lower() == "too":
+
+    # Single degree adverb:
+    # - comparative shifters ("more/less") are not pure intensifiers
+    # - any other advmod is treated as intensification => STRONG
+    lemma = deg[0].lemma_.lower()
+    if lemma in {"more", "less"}:
+        return Strength.MED
+
+    # "too" is explicitly strong (already implied by rule above, but keep clarity)
+    if lemma == "too":
         return Strength.STRONG
-    return Strength.MED
+
+    return Strength.STRONG
 
 
 def _direction_from_context(tok: Token) -> Direction:
