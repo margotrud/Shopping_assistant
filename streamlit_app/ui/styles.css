@@ -1,0 +1,436 @@
+/* =========================================================
+   Luxury UI Theme — Cosmetics Portfolio (LOCKED)
+   ========================================================= */
+
+/* ---------- Theme tokens ---------- */
+:root {
+  --bg: #FCFCFA;              /* clair, crème froid (évite le jaune) */
+  --ink: #132A63;             /* bleu nuit (distinct du noir) */
+  --muted: rgba(19, 42, 99, 0.62);
+  --border: rgba(19, 42, 99, 0.14);
+
+  --radius: 18px;
+}
+
+/* ---------- Fonts ---------- */
+@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Inter:wght@400;500;600&display=swap');
+
+/* =========================================================
+   App background & base
+   ========================================================= */
+html, body {
+  background: var(--bg) !important;
+  color: var(--ink) !important;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.stApp {
+  background: var(--bg) !important;
+  margin-left: 0 !important;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a, a:visited {
+  color: var(--ink) !important;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--ink) !important;
+  text-decoration: underline;
+}
+
+/* =========================================================
+   HARD KILL — Streamlit chrome (header + sidebar + gutter)
+   ========================================================= */
+
+[data-testid="stHeader"] {
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+[data-testid="stHeader"] * {
+  display: none !important;
+}
+
+[data-testid="stSidebar"],
+[data-testid="stSidebarNav"] {
+  display: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+}
+
+[data-testid="collapsedControl"],
+button[title*="sidebar" i],
+button[aria-label*="sidebar" i],
+button[title*="Sidebar" i],
+button[aria-label*="Sidebar" i] {
+  display: none !important;
+  visibility: hidden !important;
+}
+
+[data-testid="stAppViewContainer"],
+section.main {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+}
+
+/* =========================================================
+   Main content container
+   ========================================================= */
+.block-container {
+  max-width: 1160px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-top: 0rem !important;
+  padding-bottom: 2.6rem !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* =========================================================
+   Typography
+   ========================================================= */
+.h1 {
+  font-family: "Libre Baskerville", serif;
+  font-weight: 700;
+  font-size: 44px;
+  line-height: 1.08;
+  margin: 0 0 12px 0;
+  color: var(--ink);
+}
+
+.h2 {
+  font-family: "Libre Baskerville", serif;
+  font-weight: 700;
+  font-size: 28px;
+  line-height: 1.16;
+  margin: 0 0 10px 0;
+  color: var(--ink);
+}
+
+.p {
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.kicker {
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+/* =========================================================
+   Top Navigation — HTML only (flat)
+   ========================================================= */
+
+.topnav {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 28px;
+  margin: 4px 0 10px 0;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.topnav::-webkit-scrollbar { height: 0; }
+
+.topnav .nav-link,
+.topnav .nav-link:visited,
+.topnav .nav-link *,
+.topnav .nav-link:visited * {
+  font-family: "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink) !important;
+  text-decoration: none !important;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.topnav .nav-link:hover {
+  opacity: 1;
+  text-decoration: none !important;
+}
+
+.topnav .nav-link.active {
+  font-weight: 700;
+  opacity: 1;
+  text-decoration: underline !important;
+  text-underline-offset: 6px;
+}
+
+/* Divider under nav */
+.divider {
+  height: 1px;
+  width: 100%;
+  background: var(--border);
+  margin: 6px 0 14px 0;
+}
+
+/* =========================================================
+   FLAT MODE — remove all white cards / boxes
+   ========================================================= */
+
+.card,
+.hero,
+.stat,
+.chip {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* Hero becomes editorial block */
+.hero {
+  padding: 0 !important;
+  margin-bottom: 36px;
+}
+
+/* Stats become simple text blocks */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px;
+  margin-top: 24px;
+}
+
+.stat {
+  padding: 0 !important;
+}
+
+.stat .value {
+  font-family: "Libre Baskerville", serif;
+  font-weight: 700;
+  font-size: 26px;
+}
+
+.stat .label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Chips become inline editorial hints */
+.chip-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.chip {
+  padding: 0 !important;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* =========================================================
+   Product rows
+   ========================================================= */
+.product {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.swatch {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.product .title {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.product .meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* =========================================================
+   CTA links (legacy)
+   ========================================================= */
+.cta-row {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.cta-link {
+  font-weight: 600;
+  color: var(--ink) !important;
+  text-decoration: underline;
+  text-underline-offset: 6px;
+}
+
+/* =========================================================
+   HOME — hero layout + luxury buttons + image
+   ========================================================= */
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 46px;
+  align-items: start;
+  margin-top: 0;
+}
+
+.hero-right {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hero-figure {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+.hero-figure img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Button-like links (minimal luxury) */
+.btn-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+
+  color: var(--ink) !important;
+  text-decoration: none !important;
+
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(19, 42, 99, 0.18);
+  background: transparent;
+}
+
+.btn:hover {
+  border-color: rgba(19, 42, 99, 0.28);
+  text-decoration: none !important;
+}
+
+/* Primary (still subtle) */
+.btn.primary {
+  border-color: rgba(19, 42, 99, 0.30);
+}
+
+/* Compact stats row (if used) */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px;
+  margin-top: 28px;
+  margin-bottom: 10px;
+}
+
+.stat-value {
+  font-family: "Libre Baskerville", serif;
+  font-weight: 700;
+  font-size: 26px;
+  color: var(--ink);
+  margin: 0;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: -6px;
+}
+
+/* =========================================================
+   Responsive
+   ========================================================= */
+@media (max-width: 900px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .h1 { font-size: 36px; }
+
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+  .hero-right { justify-content: flex-start; }
+  .hero-figure { max-width: 520px; }
+}
+
+/* ================================
+   Fix: kill Streamlit inter-block vertical spacing
+   (removes the big blank gap between nav and first content)
+   ================================ */
+section.main div[data-testid="stVerticalBlock"]{
+  gap: 0 !important;
+}
+
+section.main div[data-testid="stVerticalBlock"] > div{
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* Fallback for older/newer Streamlit wrappers */
+section.main .element-container{
+  margin: 0 !important;
+}
+
+/* HARD: remove top padding introduced by Streamlit wrappers */
+[data-testid="stAppViewContainer"]{
+  padding-top: 0 !important;
+}
+
+section.main{
+  padding-top: 0 !important;
+}
+
+/* Also neutralize the first element container spacing (common culprit) */
+section.main > div.block-container > div:first-child{
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* Streamlit toolbar / decoration can reserve space */
+[data-testid="stToolbar"],
+[data-testid="stDecoration"]{
+  display: none !important;
+  height: 0 !important;
+}
+
+/* DEBUG: show what occupies the blank space */
+[data-testid="stAppViewContainer"],
+section.main,
+section.main > div.block-container,
+section.main > div.block-container > div{
+  outline: 1px solid rgba(255,0,0,0.25) !important;
+}
