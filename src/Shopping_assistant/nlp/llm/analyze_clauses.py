@@ -8,9 +8,10 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypedDi
 
 import numpy as np
 
-from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.color.lexicon import ColorLexicon
 from Shopping_assistant.nlp.parsing.clauses import ClauseChunk
 from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_for_mentions
+from Shopping_assistant.utils.optional_deps import require
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +308,64 @@ def _safe_float(x: Any) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Extended lexicon (offline artifact) loader + resolver
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _color_lexicon() -> Optional[ColorLexicon]:
+    """
+    Does:
+        Load the offline-built extended color lexicon if available.
+
+    Notes:
+        - No CSV dependency.
+        - If missing/unavailable, return None and keep CSS/XKCD-only behavior.
+    """
+    try:
+        return ColorLexicon.load()  # data/nlp/color_lexicon.json by default
+    except Exception:
+        return None
+
+
+def _lexicon_info_for_candidate(cand: str) -> Optional[Dict[str, Any]]:
+    """
+    Does:
+        Resolve a candidate phrase via ColorLexicon and convert to world-index-like info.
+
+    Returns:
+        {name, hex, hue_deg?, lab_hue_deg?, source}
+    """
+    lex = _color_lexicon()
+    if lex is None:
+        return None
+
+    # Conservative: avoid spurious matches.
+    resolved = lex.resolve(cand, topk=1, fuzzy_cutoff=75.0, use_semantic=True)
+    if not resolved:
+        return None
+
+    best = resolved[0]
+    hx = best.hex
+
+    info: Dict[str, Any] = {
+        "name": best.name,
+        "hex": hx,
+        "source": f"lexicon:{best.source}",
+    }
+
+    hue = _hex_to_hue_deg(hx)
+    if hue is not None:
+        info["hue_deg"] = hue
+
+    lab = _hex_to_lab(hx)
+    if lab is not None:
+        _L, a, b = lab
+        info["lab_hue_deg"] = _lab_hue_deg_from_ab(a, b)
+
+    return info
+
+
+# ---------------------------------------------------------------------------
 # spaCy STOP_WORDS (lazy)
 # ---------------------------------------------------------------------------
 
@@ -353,7 +412,11 @@ def extract_mentions_free(doc_text: str, color_index: Dict[str, Dict[str, Any]])
         matched: Optional[Mention] = None
         for n in range(min(max_n, len(toks) - i), 0, -1):
             cand = " ".join(toks[i : i + n])
+
             info = color_index.get(cand)
+            if not info:
+                info = _lexicon_info_for_candidate(cand)
+
             if info:
                 matched = {
                     "alias": cand,
@@ -372,6 +435,7 @@ def extract_mentions_free(doc_text: str, color_index: Dict[str, Dict[str, Any]])
 
                 i += n
                 break
+
         if matched:
             hits.append(matched)
         else:
