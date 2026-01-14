@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
@@ -21,13 +22,25 @@ from Shopping_assistant.color.scoring import (
     Constraint,
     QuerySpec,
     score_shades,
-    _ensure_cluster_id,
+    _ensure_cluster_id as _ensure_cluster_id,  # keep for scripts/debug
 )
 
 # Keep consistent with Shopping_assistant.color.scoring._parse_constraint()
 _CONSTRAINT_RE = re.compile(
     r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*((?:low|medium|high|very_high)|(?:[0-9]*\.?[0-9]+))\s*:\s*([0-9]*\.?[0-9]+)\s*$"
 )
+
+# Neutral “plain color” regularizer policy:
+# - MUST NOT expand candidate pools (keeps hue family)
+# - MUST be low-weight (tie-breaker only)
+# NOTE: with the updated calibration JSON, warmth can be used as a constraint dim;
+#       we include it here only for "plain color" regularization.
+_NEUTRAL_DIMS = ("light_hsl", "sat_hsl", "warmth")
+_NEUTRAL_LEVEL = "medium"
+_NEUTRAL_W = 0.10  # low weight: tie-breaker only
+
+# Hue-lock neighborhood: AB-dominant cluster distance (prevents "bright" drifting to peach/coral)
+_NEIGHBOR_WL = 0.05  # 0.0 = strict hue lock, 0.05 = slight lightness tolerance
 
 
 def _parse_constraint_token(token: str) -> Constraint:
@@ -187,6 +200,7 @@ def _neighbor_clusters_from_like_cluster(
     """
     Does:
         Select candidate pool: like cluster + nearest neighbor clusters from prototype Lab centers.
+        Uses AB-dominant distance to lock hue family (prevents "bright" drifting to peach/coral).
     """
     prot = assets.prototypes
     need = {"cluster_id", "L_lab", "a_lab", "b_lab"}
@@ -203,7 +217,9 @@ def _neighbor_clusters_from_like_cluster(
     P = p[["L_lab", "a_lab", "b_lab"]].to_numpy(float)
     pid = p["cluster_id"].to_numpy(int)
 
-    d2 = ((P - center[None, :]) ** 2).sum(axis=1)
+    # AB-dominant neighborhood
+    wL = float(_NEIGHBOR_WL)
+    d2 = wL * (P[:, 0] - center[0]) ** 2 + (P[:, 1] - center[1]) ** 2 + (P[:, 2] - center[2]) ** 2
     order = np.argsort(d2)
 
     k = max(1, int(topn))
@@ -220,42 +236,6 @@ def _neighbor_clusters_from_like_cluster(
     return uniq
 
 
-def _print_axis_stats(df: pd.DataFrame, axis: str) -> None:
-    if axis not in df.columns or df.empty:
-        return
-    vals = df[axis].astype(float)
-    print(
-        f"  {axis:<12} "
-        f"min={vals.min():.3f}  "
-        f"mean={vals.mean():.3f}  "
-        f"max={vals.max():.3f}"
-    )
-
-
-def _all_clusters_from_assets(assets: AssetBundle) -> list[int]:
-    """
-    Does:
-        Return all cluster_ids available for scoring, preferring assignments/inventory coverage.
-        No static assumptions.
-    """
-    # Prefer assignments (closest to actual inventory mapping)
-    if hasattr(assets, "assignments") and isinstance(getattr(assets, "assignments", None), pd.DataFrame):
-        a = assets.assignments
-        if "cluster_id" in a.columns:
-            vals = a["cluster_id"].dropna()
-            if len(vals):
-                return sorted({int(x) for x in vals.astype(int).tolist()})
-
-    # Fallback: prototypes
-    prot = assets.prototypes
-    if "cluster_id" in prot.columns:
-        vals = prot["cluster_id"].dropna()
-        if len(vals):
-            return sorted({int(x) for x in vals.astype(int).tolist()})
-
-    return []
-
-
 def _has_effective_thresholds(ths: dict[Axis, AxisThreshold] | None) -> bool:
     """
     Does:
@@ -269,6 +249,241 @@ def _has_effective_thresholds(ths: dict[Axis, AxisThreshold] | None) -> bool:
         if w > 0.0:
             return True
     return False
+
+
+def _has_color_like_mention(nlp_res) -> bool:
+    for m in getattr(nlp_res, "mentions", ()) or ():
+        kind = getattr(getattr(m, "kind", None), "value", None)
+        if kind != "color":
+            continue
+        pol = getattr(getattr(m, "polarity", None), "value", None)
+        if pol in {"like", "neutral", "unknown"}:
+            return True
+    return False
+
+
+def _is_neutral_regularizer_only(cons: tuple[Constraint, ...]) -> bool:
+    """
+    Does:
+        Detect the internal "plain color" neutral regularizer constraints.
+        Criteria: exactly the +/- medium band on the neutral dims, with low weights.
+    """
+    if not cons:
+        return False
+
+    needed = {(d, ">=", _NEUTRAL_LEVEL) for d in _NEUTRAL_DIMS} | {(d, "<=", _NEUTRAL_LEVEL) for d in _NEUTRAL_DIMS}
+    got = set()
+
+    for c in cons:
+        if c.cutpoint is not None:
+            return False
+        if c.level is None:
+            return False
+        if str(c.dim) not in _NEUTRAL_DIMS:
+            return False
+        if str(c.level) != _NEUTRAL_LEVEL:
+            return False
+        if c.op not in {">=", "<="}:
+            return False
+
+        got.add((str(c.dim), str(c.op), str(c.level)))
+
+        if float(getattr(c, "weight", 0.0) or 0.0) > 0.35:
+            return False
+
+    return got == needed
+
+
+def _is_brightness_only_constraints(nlp_res) -> bool:
+    """
+    Does:
+        Return True if NLP produced constraints and ALL are brightness/lightness axis constraints.
+        Uses nlp_res.trace["constraints_final"] when available.
+    """
+    trace = getattr(nlp_res, "trace", None) or {}
+    cons = trace.get("constraints_final", []) or []
+    if not cons:
+        return False
+
+    for c in cons:
+        axis = None
+        try:
+            axis = c.get("axis", None)
+        except Exception:
+            axis = None
+
+        # Conservative fallback: if structure unexpected, treat as NOT brightness-only.
+        if not isinstance(axis, str):
+            return False
+
+        ax = axis.strip().lower()
+        if ax not in {"brightness", "lightness"}:
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------
+# Constraint-aware pool expansion (DYNAMIC, but NOT "all clusters")
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ClusterScore:
+    cluster_id: int
+    d2: float
+    feasible_frac: float
+    n_rows: int
+
+
+def _fixed_threshold_from_calibration(cal: dict, dim: str, level: str) -> float:
+    th = cal.get("thresholds", {}).get(dim, {})
+    if not isinstance(th, dict) or level not in th:
+        raise KeyError(f"Missing calibration threshold for dim={dim!r} level={level!r}")
+    return float(th[level])
+
+
+def _constraint_threshold_for_pool(cal: dict, c: Constraint) -> float:
+    # Pool-feasibility expansion is conservative; we use ABS thresholds only.
+    # Relative mode is applied inside score_shades/_apply_constraints.
+    if c.cutpoint is not None:
+        return float(c.cutpoint)
+    if c.level is None:
+        raise ValueError(f"Constraint has neither cutpoint nor level: {c}")
+    return _fixed_threshold_from_calibration(cal, c.dim, str(c.level))
+
+
+def _satisfy_constraint_series(vals: pd.Series, c: Constraint, thr: float) -> pd.Series:
+    x = pd.to_numeric(vals, errors="coerce")
+    if c.op == "<=":
+        return x <= float(thr)
+    return x >= float(thr)
+
+
+def _pick_candidate_clusters_dynamic(
+    *,
+    assets: AssetBundle,
+    like_cluster_id: int,
+    base_clusters: list[int],
+    constraints: tuple[Constraint, ...],
+    min_candidates: int,
+    max_clusters: int,
+    min_feasible_frac: float,
+) -> list[int]:
+    """
+    Does:
+        Expand candidate clusters only as needed to satisfy constraints,
+        prioritizing Lab proximity to like_cluster prototype center.
+        Never expands to "all clusters" blindly.
+    """
+    if not constraints:
+        return base_clusters
+
+    inv = assets.inventory
+    if "cluster_id" not in inv.columns:
+        return base_clusters
+
+    prot = assets.prototypes
+    needp = {"cluster_id", "L_lab", "a_lab", "b_lab"}
+    if not needp.issubset(set(prot.columns)):
+        return base_clusters
+
+    p = prot.copy()
+    p["cluster_id"] = p["cluster_id"].astype(int)
+    row0 = p[p["cluster_id"] == int(like_cluster_id)]
+    if row0.empty:
+        return base_clusters
+
+    c0 = row0[["L_lab", "a_lab", "b_lab"]].iloc[0].to_numpy(float)
+    P = p[["L_lab", "a_lab", "b_lab"]].to_numpy(float)
+    pid = p["cluster_id"].to_numpy(int)
+
+    # IMPORTANT: keep expansion itself also AB-dominant (same rationale as neighborhood)
+    wL = float(_NEIGHBOR_WL)
+    d2 = wL * (P[:, 0] - c0[0]) ** 2 + (P[:, 1] - c0[1]) ** 2 + (P[:, 2] - c0[2]) ** 2
+
+    cal = assets.calibration
+    inv_c = inv.copy()
+    inv_c["cluster_id"] = inv_c["cluster_id"].astype(int)
+
+    needed_dims = {c.dim for c in constraints}
+    missing_dims = [d for d in needed_dims if d not in inv_c.columns]
+    if missing_dims:
+        return base_clusters
+
+    cluster_rows: list[_ClusterScore] = []
+    for cid, di in zip(pid.tolist(), d2.tolist()):
+        g = inv_c[inv_c["cluster_id"] == int(cid)]
+        n = int(len(g))
+        if n == 0:
+            feas = 0.0
+        else:
+            m = pd.Series(True, index=g.index)
+            for c in constraints:
+                thr = _constraint_threshold_for_pool(cal, c)
+                m &= _satisfy_constraint_series(g[c.dim], c, thr).fillna(False)
+            feas = float(m.mean()) if n else 0.0
+        cluster_rows.append(_ClusterScore(cluster_id=int(cid), d2=float(di), feasible_frac=feas, n_rows=n))
+
+    cluster_rows.sort(key=lambda r: (r.d2, -r.feasible_frac))
+
+    chosen: list[int] = []
+    seen: set[int] = set()
+    for x in base_clusters:
+        xi = int(x)
+        if xi not in seen:
+            chosen.append(xi)
+            seen.add(xi)
+
+    def feasible_count_in_pool(cluster_ids: list[int]) -> int:
+        sub = inv_c[inv_c["cluster_id"].isin(cluster_ids)]
+        if sub.empty:
+            return 0
+        m = pd.Series(True, index=sub.index)
+        for c in constraints:
+            thr = _constraint_threshold_for_pool(cal, c)
+            m &= _satisfy_constraint_series(sub[c.dim], c, thr).fillna(False)
+        return int(m.sum())
+
+    target_n = max(int(min_candidates), 1)
+    max_k = max(int(max_clusters), len(chosen))
+    cur_feas = feasible_count_in_pool(chosen)
+
+    for r in cluster_rows:
+        if len(chosen) >= max_k:
+            break
+        if cur_feas >= target_n:
+            break
+        cid = int(r.cluster_id)
+        if cid in seen:
+            continue
+        if r.n_rows > 0 and (r.feasible_frac >= float(min_feasible_frac) or cur_feas < max(5, target_n // 4)):
+            chosen.append(cid)
+            seen.add(cid)
+            cur_feas = feasible_count_in_pool(chosen)
+
+    for r in cluster_rows:
+        if len(chosen) >= max_k:
+            break
+        if cur_feas >= target_n:
+            break
+        cid = int(r.cluster_id)
+        if cid in seen:
+            continue
+        chosen.append(cid)
+        seen.add(cid)
+        cur_feas = feasible_count_in_pool(chosen)
+
+    return chosen
+
+
+def _print_dim_stats(df: pd.DataFrame, dim: str) -> None:
+    if dim not in df.columns or df.empty:
+        return
+    vals = pd.to_numeric(df[dim], errors="coerce").dropna()
+    if vals.empty:
+        return
+    print(f"  {dim:<12} min={vals.min():.3f}  mean={vals.mean():.3f}  max={vals.max():.3f}")
 
 
 def recommend_from_text(
@@ -289,27 +504,27 @@ def recommend_from_text(
     """
     Does:
         Recommend shades from free text with optional debug instrumentation.
+
+    Policy (target behavior):
+      - Color mention => lock hue family (AB-dominant neighborhood).
+      - Plain color => return "most neutral/central" shades within that family (low-weight regularizer).
+      - Color + constraints => apply constraints within family; expand only if family has too few feasible candidates.
+      - Brightness-only constraints => NEVER expand beyond the like_cluster family (prevents coral/peach drift).
     """
     # 0) NLP
     nlp_res = interpret_nlp(text, debug=debug)
-
-    # Keep preference term OFF unless explicitly enabled (score_shades contract).
     lambda_preference = float(lambda_preference)
+
+    has_color = _has_color_like_mention(nlp_res)
+    hue_lock = bool(has_color)  # color mention => hue family lock
+    brightness_only = bool(has_color) and _is_brightness_only_constraints(nlp_res)
 
     # 1) like_cluster_id (dynamic from NLP anchor Lab)
     if like_cluster_id is None:
         like_cluster_id = _select_like_cluster_id_from_nlp(nlp_res, assets=assets)
+    like_cluster_id = int(like_cluster_id)
 
-    # 2) Initial candidate pool (may be overridden by constraints after they are built)
-    if candidate_cluster_ids is None:
-        candidate_cluster_ids = _neighbor_clusters_from_like_cluster(
-            int(like_cluster_id),
-            assets=assets,
-            topn=int(candidate_clusters_topn),
-        )
-    candidate_cluster_ids = [int(x) for x in candidate_cluster_ids]
-
-    # 3) Thresholds / blob
+    # 2) Thresholds / blob
     ths: dict[Axis, AxisThreshold] | None
     constraints_blob: str
 
@@ -327,55 +542,145 @@ def recommend_from_text(
 
         constraints_blob = build_constraints_blob_from_thresholds(ths, calibration=assets.calibration)
 
-    # 3b) Constraint-aware pool expansion (applies to BOTH override and computed thresholds)
-    # Rule: if constraints have effective weight OR blob is non-empty -> do not lock to local neighbors.
-    has_constraints = _has_effective_thresholds(ths) or bool(constraints_blob)
-    if has_constraints:
-        all_clusters = _all_clusters_from_assets(assets)
-        if all_clusters:
-            candidate_cluster_ids = all_clusters
-        else:
-            # If assets are incomplete, fall back to whatever we already had.
-            candidate_cluster_ids = [int(x) for x in candidate_cluster_ids]
+    # 3) Parse blob
+    cons: tuple[Constraint, ...] = ()
+    if constraints_blob:
+        tokens = [t.strip() for t in str(constraints_blob).split(";") if t.strip()]
+        cons = tuple(_parse_constraint_token(t) for t in tokens)
 
-    # ---- DEBUG (NLP → thresholds + anchor)
+    # 3b) Plain-color neutral regularizer:
+    injected_neutral = False
+    if (not cons) and has_color and (not _has_effective_thresholds(ths)):
+        neutral_tokens: list[str] = []
+        for d in _NEUTRAL_DIMS:
+            neutral_tokens.append(f"{d}>={_NEUTRAL_LEVEL}:{_NEUTRAL_W}")
+            neutral_tokens.append(f"{d}<={_NEUTRAL_LEVEL}:{_NEUTRAL_W}")
+        constraints_blob = ";".join(neutral_tokens)
+        cons = tuple(_parse_constraint_token(t) for t in neutral_tokens)
+        injected_neutral = True
+
+    is_neutral_only = _is_neutral_regularizer_only(cons)
+
+    # 4) Base pool
+    if candidate_cluster_ids is None:
+        if brightness_only:
+            # Hard family lock for brightness-only requests (prevents peach/coral drift)
+            base_clusters = [like_cluster_id]
+        else:
+            base_clusters = _neighbor_clusters_from_like_cluster(
+                like_cluster_id,
+                assets=assets,
+                topn=int(candidate_clusters_topn),
+            )
+    else:
+        base_clusters = [int(x) for x in candidate_cluster_ids]
+        if like_cluster_id not in base_clusters:
+            base_clusters = [like_cluster_id] + base_clusters
+
+    # 5) Pool selection policy:
+    # - neutral-only => NEVER expand
+    # - brightness-only => NEVER expand (even if constraints exist)
+    # - hue_lock => expand only if too few feasible candidates within base family
+    # - no color mention => bounded feasibility-driven expansion
+    candidate_cluster_ids_final = base_clusters
+
+    if cons and (not is_neutral_only) and (not brightness_only):
+        if hue_lock:
+            min_candidates = max(50, 5 * int(topk))
+
+            inv = assets.inventory
+            inv_c = inv.copy()
+            if "cluster_id" in inv_c.columns:
+                inv_c["cluster_id"] = inv_c["cluster_id"].astype(int)
+            else:
+                inv_c = inv_c.assign(cluster_id=-1)
+
+            sub = inv_c[inv_c["cluster_id"].isin(base_clusters)]
+            if sub.empty:
+                feasible_n = 0
+            else:
+                m = pd.Series(True, index=sub.index)
+                for c in cons:
+                    thr = _constraint_threshold_for_pool(assets.calibration, c)
+                    m &= _satisfy_constraint_series(sub[c.dim], c, thr).fillna(False)
+                feasible_n = int(m.sum())
+
+            if feasible_n < min_candidates:
+                max_clusters = max(len(base_clusters), min(18, len(assets.prototypes)))
+                candidate_cluster_ids_final = _pick_candidate_clusters_dynamic(
+                    assets=assets,
+                    like_cluster_id=like_cluster_id,
+                    base_clusters=base_clusters,
+                    constraints=cons,
+                    min_candidates=min_candidates,
+                    max_clusters=max_clusters,
+                    min_feasible_frac=0.05,
+                )
+            else:
+                candidate_cluster_ids_final = base_clusters
+        else:
+            min_candidates = max(50, 5 * int(topk))
+            max_clusters = max(len(base_clusters), min(28, len(assets.prototypes)))
+            candidate_cluster_ids_final = _pick_candidate_clusters_dynamic(
+                assets=assets,
+                like_cluster_id=like_cluster_id,
+                base_clusters=base_clusters,
+                constraints=cons,
+                min_candidates=min_candidates,
+                max_clusters=max_clusters,
+                min_feasible_frac=0.05,
+            )
+
+    # ---- DEBUG
     if debug:
         print("\n[NLP constraints_final]")
-        for c in (nlp_res.trace or {}).get("constraints_final", []):
-            print(
-                f"  {c['axis']:>10}  {c['direction']:<5}  "
-                f"{c['strength']:<6}  conf={c['confidence']:.2f}  "
-                f"'{c['evidence']}'"
-            )
+        for c in (getattr(nlp_res, "trace", None) or {}).get("constraints_final", []):
+            try:
+                print(
+                    f"  {c['axis']:>10}  {c['direction']:<5}  "
+                    f"{c['strength']:<6}  conf={c['confidence']:.2f}  "
+                    f"'{c['evidence']}'"
+                )
+            except Exception:
+                print(f"  {c}")
 
         if ths:
             print("\n[Axis thresholds]")
             for ax, t in ths.items():
                 print(f"  {ax.value:<12} low={t.low} high={t.high} weight={t.weight:.2f}")
 
-        if constraints_blob:
-            print("\n[Constraints blob]")
-            print(f"  {constraints_blob}")
+        print("\n[Constraints blob]")
+        print(f"  {constraints_blob!r}")
+        print(f"  injected_neutral={injected_neutral}  neutral_only={is_neutral_only}")
+        print(f"  has_color={has_color}  hue_lock={hue_lock}  brightness_only={brightness_only}")
+        print(f"  neighbor_wL={_NEIGHBOR_WL}")
 
         anchor = _anchor_lab_from_nlp(nlp_res)
         print("\n[Anchor]")
         print(f"  target_lab={anchor}")
-        print(f"  like_cluster_id={int(like_cluster_id)}")
-        print(f"  candidate_cluster_ids={candidate_cluster_ids}")
+        print(f"  like_cluster_id={like_cluster_id}")
 
-    # 4) Parse constraints blob
-    cons: tuple[Constraint, ...] = ()
-    if constraints_blob:
-        tokens = [t.strip() for t in str(constraints_blob).split(";") if t.strip()]
-        cons = tuple(_parse_constraint_token(t) for t in tokens)
+        print("\n[Candidate pools]")
+        print(f"  base_clusters(n={len(base_clusters)}): {base_clusters}")
+        print(f"  final_clusters(n={len(candidate_cluster_ids_final)}): {candidate_cluster_ids_final}")
 
-    # 5) Inventory
+    # 6) Inventory slice
     df = assets.inventory.copy()
-    df = _ensure_cluster_id(df, assets.prototypes, assets.assignments)
-    df = df[df["cluster_id"].astype(int).isin(candidate_cluster_ids)].copy()
+    if "cluster_id" not in df.columns:
+        raise KeyError(
+            "assets.inventory missing 'cluster_id'. "
+            "Fix AssetBundle loader to inject cluster_id from assignments before recommendation."
+        )
 
-    # 6) Scoring
-    query = QuerySpec(like_cluster_id=int(like_cluster_id), constraints=cons)
+    df["cluster_id"] = df["cluster_id"].astype(int)
+    df = df[df["cluster_id"].isin([int(x) for x in candidate_cluster_ids_final])].copy()
+    if df.empty:
+        df = assets.inventory.copy()
+        df["cluster_id"] = df["cluster_id"].astype(int)
+        df = df[df["cluster_id"].isin([int(x) for x in base_clusters])].copy()
+
+    # 7) Scoring
+    query = QuerySpec(like_cluster_id=like_cluster_id, constraints=cons)
     scored = score_shades(
         df,
         assets.prototypes,
@@ -383,15 +688,15 @@ def recommend_from_text(
         lambda_constraints=float(lambda_constraints),
         lambda_preference=float(lambda_preference),
         calibration=assets.calibration,
-        preference_weights=None,  # keep None unless you explicitly enable preference term
+        preference_weights=None,
     )
 
     sort_col = "score_total" if "score_total" in scored.columns else "score"
     top = scored.sort_values(sort_col, ascending=False).head(int(topk))
 
     if debug:
-        print("\n[Top-K axis distribution]")
-        for axis in ["brightness", "vibrancy", "saturation", "depth", "clarity"]:
-            _print_axis_stats(top, axis)
+        print("\n[Top-K dim distribution]")
+        for dim in ["light_hsl", "sat_hsl", "warmth", "depth", "colorfulness", "C_lab", "L_lab"]:
+            _print_dim_stats(top, dim)
 
     return top

@@ -47,6 +47,10 @@ def _merge_one_axis(axis: Axis, intents: List[AxisIntent]) -> AxisDecision:
     Rule:
         Direction score is computed ONLY from (strength, direction).
         Polarity does not upweight the vote (to avoid double-boost with axis_thresholds.py).
+
+    Fix:
+        Strength must NOT be derived from aggregate score magnitude (downgrades single intents).
+        Strength is preserved as the MAX strength among intents supporting the winning direction.
     """
     if not intents:
         return AxisDecision(
@@ -89,8 +93,9 @@ def _merge_one_axis(axis: Axis, intents: List[AxisIntent]) -> AxisDecision:
 
     direction = Direction.RAISE if score > 0 else Direction.LOWER
 
-    # Strength is decided from magnitude of the (direction-only) aggregate
-    strength = _score_to_strength(score)
+    # ✅ Strength preservation (no downgrade): take MAX strength among winning-direction intents
+    win_intents = [i for i in intents if i.direction == direction]
+    strength = _max_strength(win_intents)
 
     return AxisDecision(
         axis=axis,
@@ -120,17 +125,21 @@ def _dir_sign(d: Direction) -> int:
     return -1
 
 
-def _score_to_strength(score: float) -> Strength:
+def _max_strength(intents: List[AxisIntent]) -> Optional[Strength]:
     """
     Does:
-        Convert aggregate score magnitude to Strength (coarse).
+        Return the maximum Strength among intents, using _strength_weight as ordering.
     """
-    a = abs(float(score))
-    if a >= 4.5:
-        return Strength.STRONG
-    if a >= 2.5:
-        return Strength.MED
-    return Strength.WEAK
+    if not intents:
+        return None
+    best = intents[0].strength
+    best_w = _strength_weight(best)
+    for it in intents[1:]:
+        w = _strength_weight(it.strength)
+        if w > best_w:
+            best = it.strength
+            best_w = w
+    return best
 
 
 def _dedupe_preserve_order(items: List[str]) -> List[str]:

@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -115,7 +115,8 @@ def load_preference_weights(path: str | Path) -> Optional[dict[str, float]]:
     if not p.exists():
         return None
     payload = json.loads(p.read_text(encoding="utf-8"))
-    return payload.get("weights")
+    w = payload.get("weights")
+    return w if isinstance(w, dict) else None
 
 
 # ---------------------------------------------------------------------
@@ -139,14 +140,6 @@ _ALLOWED_DIMS = {
 
 _ALLOWED_OPS = {"<=", ">="}
 
-# kept for backwards-compat/debug; NOT used for threshold resolution anymore
-_LEVEL_TO_Q = {
-    "low": 0.35,
-    "medium": 0.50,
-    "high": 0.65,
-    "very_high": 0.80,
-}
-
 
 @dataclass(frozen=True)
 class Constraint:
@@ -167,17 +160,17 @@ class QuerySpec:
 
 
 def _nlp_axis_to_dim(axis: str) -> str | None:
-    # Map NLP axes to calibrated scoring dims (must exist in _ALLOWED_DIMS + calibration thresholds)
+    # Map NLP axes to calibrated scoring dims
     if axis == "brightness":
-        return "light_hsl"     # calibrated
+        return "light_hsl"
     if axis == "saturation":
-        return "sat_hsl"       # calibrated
+        return "sat_hsl"
     if axis == "vibrancy":
-        return "sat_eff"       # calibrated (good proxy for “neon/vibrant”)
+        return "sat_eff"
     if axis == "depth":
-        return "depth"         # calibrated
+        return "depth"
     if axis == "clarity":
-        return "colorfulness"  # proxy (calibrated). refine later if needed
+        return "colorfulness"
     return None
 
 
@@ -186,9 +179,19 @@ def _nlp_strength_to_level(direction: str, strength: str) -> str:
     direction: 'raise'|'lower'
     strength: 'weak'|'med'|'strong'
     Output: 'low'|'medium'|'high'|'very_high'
+
+    FIX:
+      The previous mapping for direction=='lower' was inverted and produced nonsensical cutpoints.
+      For "lower", stronger intent must push the threshold LOWER (i.e., level 'low'), not 'medium/high/very_high'.
     """
+    strength = str(strength)
+    direction = str(direction)
+
     if direction == "lower":
-        return {"strong": "medium", "med": "high", "weak": "very_high"}.get(strength, "high")
+        # "lower X" means we want <= threshold. Strong => low, med => medium, weak => high.
+        return {"strong": "low", "med": "medium", "weak": "high"}.get(strength, "medium")
+
+    # "raise X" means we want >= threshold. Strong => high, med => medium, weak => low.
     return {"strong": "high", "med": "medium", "weak": "low"}.get(strength, "medium")
 
 
@@ -230,7 +233,7 @@ def constraints_from_nlp(
 
 
 # ---------------------------------------------------------------------
-# Public API (stable wrapper)
+# Public API helpers
 # ---------------------------------------------------------------------
 
 
@@ -245,13 +248,6 @@ def _split_constraints_blob(constraints: str) -> List[str]:
 def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[str]]:
     """
     Parse a combined constraints blob that may include a MIX block.
-
-    Example:
-      MIX:primary=26;secondary=3;alpha=0.7;C_lab<=high:1.2;sat_eff<=high:0.8
-
-    Returns:
-      mix: {"primary": int, "secondary": int, "alpha": float} or None
-      constraint_tokens: list of constraint expressions ONLY (no mix params)
     """
     tokens = _split_constraints_blob(constraints)
     if not tokens:
@@ -270,7 +266,6 @@ def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[s
             if not tail:
                 continue
 
-            # tail can be a param (primary=..) OR already a constraint
             if ("<=" in tail) or (">=" in tail):
                 out.append(tail)
                 continue
@@ -284,7 +279,6 @@ def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[s
             continue
 
         if in_mix:
-            # swallow mix params until the first real constraint token appears
             if ("<=" in t) or (">=" in t):
                 in_mix = False
                 out.append(t)
@@ -298,13 +292,11 @@ def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[s
             mix[k.strip().lower()] = v.strip()
             continue
 
-        # normal constraint outside mix
         out.append(t)
 
     if mix is None:
         return None, out
 
-    # finalize + validate mix dict
     try:
         primary = int(mix["primary"])
         secondary = int(mix["secondary"])
@@ -334,7 +326,6 @@ def _mix_prototype_rows(
     r2 = p2.iloc[0]
 
     out = r1.copy()
-    # Mix in Lab space (required). Also mix C/H if present (for preference term).
     for k in ("L_lab", "a_lab", "b_lab", "C_lab", "H_lab_deg"):
         if k in r1.index and k in r2.index and pd.notna(r1[k]) and pd.notna(r2[k]):
             out[k] = alpha * float(r1[k]) + (1.0 - alpha) * float(r2[k])
@@ -372,24 +363,47 @@ def _check_constraint(c: Constraint) -> None:
 # Cluster id injection
 # ---------------------------------------------------------------------
 
+def _load_assignments(assignments: Any) -> Optional[pd.DataFrame]:
+    """
+    Accept either:
+      - Path/str to CSV
+      - A DataFrame already loaded (AssetBundle case)
+      - None
+    """
+    if assignments is None:
+        return None
+    if isinstance(assignments, pd.DataFrame):
+        return assignments
+    p = Path(assignments)
+    if p.exists():
+        return pd.read_csv(p)
+    return None
+
 
 def _ensure_cluster_id(
     df: pd.DataFrame,
     prototypes: pd.DataFrame,
-    assignments_path: Optional[Path],
+    assignments: Optional[str | Path | pd.DataFrame],
 ) -> pd.DataFrame:
+    """
+    FIX:
+      previous signature implied a Path but callers sometimes passed a DataFrame.
+      This accepts both, without silent misbehavior.
+    """
     if "cluster_id" in df.columns:
         return df
 
-    if assignments_path is not None and assignments_path.exists():
-        asg = pd.read_csv(assignments_path)
+    asg = _load_assignments(assignments)
+    if asg is not None and "cluster_id" in asg.columns:
         key_cols = [c for c in ("product_id", "shade_id") if c in df.columns and c in asg.columns]
-        if key_cols and "cluster_id" in asg.columns:
+        if key_cols:
+            df2 = df.copy()
+            asg2 = asg.copy()
             for k in key_cols:
-                df[k] = df[k].astype(str)
-                asg[k] = asg[k].astype(str)
+                df2[k] = df2[k].astype(str)
+                asg2[k] = asg2[k].astype(str)
 
-            merged = df.merge(asg[key_cols + ["cluster_id"]], on=key_cols, how="left")
+            merged = df2.merge(asg2[key_cols + ["cluster_id"]], on=key_cols, how="left")
             if merged["cluster_id"].notna().mean() > 0.95:
                 return merged
 
@@ -465,8 +479,25 @@ def _dim_relative_quantiles(cal: dict | None, dim: str) -> dict[str, float]:
                 continue
         if out:
             return out
-    # fallback defaults (only used when calibration doesn't specify it)
+    # Default is intentionally conservative: "high" means top 10% when op is ">="
     return {"low": 0.70, "medium": 0.80, "high": 0.90, "very_high": 0.95}
+
+
+def _calib_bounds_for_dim(calibration: dict, *, dim: str) -> tuple[float | None, float | None]:
+    ths = calibration.get("thresholds", {}).get(dim)
+    if not isinstance(ths, dict) or not ths:
+        return None, None
+    vals = []
+    for _, v in ths.items():
+        try:
+            vv = float(v)
+            if np.isfinite(vv):
+                vals.append(vv)
+        except Exception:
+            continue
+    if not vals:
+        return None, None
+    return float(min(vals)), float(max(vals))
 
 
 def _constraint_threshold_relative(
@@ -483,29 +514,34 @@ def _constraint_threshold_relative(
     if vals.empty:
         raise ValueError(f"Cannot compute relative threshold: no finite values for dim '{dim}'.")
 
+    cfg = _dim_cfg(cal, dim)
+    min_pool_n = int(cfg.get("min_pool_n", 0) or 0)
+    if min_pool_n and len(vals) < min_pool_n:
+        return _constraint_threshold_fixed(cal, dim, level)
+
     qmap = _dim_relative_quantiles(cal, dim)
     q = float(qmap.get(str(level).lower(), 0.80))
 
-    # For "<=" constraints, "low/medium/high" should refer to the LOWER tail (darker/less),
-    # so we flip to (1-q). For ">=", we keep q (upper tail).
+    # "<=" should pick a LOW quantile, ">=" a HIGH quantile
     if str(op).strip() == "<=":
         q = 1.0 - q
 
     q = min(0.999, max(0.001, q))
-    return float(vals.quantile(q))
+    thr = float(vals.quantile(q))
+
+    if bool(cfg.get("clamp_to_fixed_bounds", False)):
+        lo, hi = _calib_bounds_for_dim(cal, dim=dim)
+        if lo is not None and np.isfinite(lo):
+            thr = max(thr, float(lo))
+        if hi is not None and np.isfinite(hi):
+            thr = min(thr, float(hi))
+
+    return float(thr)
 
 
 def _constraint_threshold_dynamic(work: pd.DataFrame, cal: dict, c: "Constraint") -> float:
-    """
-    Does:
-        Resolve threshold for a constraint.
-        - numeric cutpoint: use directly
-        - level-based: absolute mode uses calibration["thresholds"][dim][level]
-                      relative mode uses quantiles over current candidate pool (work[dim])
-    """
     if c.cutpoint is not None:
         return float(c.cutpoint)
-
     if c.level is None:
         raise ValueError(f"Constraint has neither cutpoint nor level: {c}")
 
@@ -513,7 +549,6 @@ def _constraint_threshold_dynamic(work: pd.DataFrame, cal: dict, c: "Constraint"
     if mode == "relative":
         return _constraint_threshold_relative(work, cal=cal, dim=c.dim, level=str(c.level), op=str(c.op))
 
-    # default absolute behavior
     return _constraint_threshold_fixed(cal, c.dim, str(c.level))
 
 
@@ -527,19 +562,22 @@ def _constraint_scale(cal: dict, dim: str) -> float:
     return 1.0
 
 
-def _constraint_penalty(values: np.ndarray, op: str, threshold: float) -> np.ndarray:
-    # continuous hinge penalty (0 if satisfied; grows with violation)
+def _constraint_violation(values: np.ndarray, op: str, threshold: float) -> np.ndarray:
+    """
+    Hinge violation (always >= 0):
+      - "<=" : violation = max(0, values - threshold)
+      - ">=" : violation = max(0, threshold - values)
+
+    CRITICAL:
+      penalty-only. Must NOT reward pushing values to extremes.
+    """
     if op == "<=":
         return np.maximum(0.0, values - threshold)
     return np.maximum(0.0, threshold - values)
 
 
 def _constraint_suffix(c: Constraint) -> str:
-    """
-    Stable string suffix for penalty column names.
-    """
     if c.cutpoint is not None:
-        # keep it compact but stable enough for debugging
         return f"{float(c.cutpoint):.6g}"
     return str(c.level)
 
@@ -563,61 +601,36 @@ def _apply_constraints(
         if c.dim not in work.columns:
             raise KeyError(f"Constraint dim '{c.dim}' missing from work df columns.")
 
-        # ✅ dynamic threshold resolution (absolute or relative) — NO hardcoded cutpoints
         thr = _constraint_threshold_dynamic(work, calibration, c)
         scale = _constraint_scale(calibration, c.dim)
 
         vals = pd.to_numeric(work[c.dim], errors="coerce").to_numpy(float)
-        # NaNs become NaN; hinge on NaN => NaN; replace with 0 to avoid poisoning total
-        vals = np.where(np.isfinite(vals), vals, np.nan)
+        safe_vals = np.nan_to_num(vals, nan=float(thr))
 
-        gap = _constraint_penalty(np.nan_to_num(vals, nan=thr), c.op, float(thr))
-        gap_norm = gap / float(scale)
+        viol = _constraint_violation(safe_vals, c.op, float(thr))
+        viol_norm = viol / float(scale)
 
-        pen = float(c.weight) * gap_norm
+        pen = float(c.weight) * viol_norm
         total += pen
 
         breakdown[f"penalty_{i}__{c.dim}{c.op}{_constraint_suffix(c)}"] = pen
-        extras[f"c{i}__{c.dim}"] = np.nan_to_num(vals, nan=float(thr))
+        extras[f"c{i}__{c.dim}"] = safe_vals
 
     return total, pd.DataFrame(breakdown, index=work.index), pd.DataFrame(extras, index=work.index)
 
 
 def _constraint_threshold(calibration: dict, c: Constraint) -> float:
-    # Used by joint feasibility relaxation for NUMERIC cutpoints only.
-    # For level-based constraints, keep absolute calibration thresholds (stable semantics).
     if c.cutpoint is not None:
         return float(c.cutpoint)
     return _constraint_threshold_fixed(calibration, c.dim, c.level)  # type: ignore[arg-type]
 
 
 def _satisfy_mask(work: pd.DataFrame, c: Constraint, thr: float) -> np.ndarray:
-    vals = work[c.dim].to_numpy(float)
+    vals = pd.to_numeric(work[c.dim], errors="coerce").to_numpy(float)
+    vals = np.nan_to_num(vals, nan=float(thr))
     if c.op == "<=":
         return vals <= float(thr)
     return vals >= float(thr)
-
-
-def _calib_bounds_for_dim(calibration: dict, *, dim: str) -> tuple[float | None, float | None]:
-    """
-    Does:
-        Return (min_level_value, max_level_value) from calibration thresholds for a dim.
-        Used to clamp numeric cutpoint relaxation so it cannot drift beyond calibrated range.
-    """
-    ths = calibration.get("thresholds", {}).get(dim)
-    if not isinstance(ths, dict) or not ths:
-        return None, None
-    vals = []
-    for _, v in ths.items():
-        try:
-            vv = float(v)
-            if np.isfinite(vv):
-                vals.append(vv)
-        except Exception:
-            continue
-    if not vals:
-        return None, None
-    return float(min(vals)), float(max(vals))
 
 
 def _snap_numeric_cutpoints_to_joint_feasibility(
@@ -625,18 +638,10 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
     constraints: Tuple[Constraint, ...],
     *,
     calibration: dict,
-    min_feasible_frac: float = 0.05,  # ✅ was 0.10 (too aggressive on small pools)
+    min_feasible_frac: float = 0.05,
     max_iter: int = 12,
-    clamp_to_calibration: bool = True,  # ✅ prevents sat_eff blow-ups (e.g., 1.9+) when very_high≈1.53
+    clamp_to_calibration: bool = True,
 ) -> Tuple[Constraint, ...]:
-    """
-    Does:
-        Make the *conjunction* (AND) of constraints feasible in the candidate pool by relaxing
-        ONLY numeric cutpoints (c.cutpoint is not None), and doing it *jointly*.
-
-    Notes:
-        - Level-based constraints are NOT relaxed here. Relative mode is handled in _apply_constraints.
-    """
     if not constraints:
         return constraints
 
@@ -683,7 +688,8 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
             if not m_other.any():
                 m_other = np.ones(len(work), dtype=bool)
 
-            vals = work.loc[m_other, c.dim].to_numpy(float)
+            vals = pd.to_numeric(work.loc[m_other, c.dim], errors="coerce").to_numpy(float)
+            vals = vals[np.isfinite(vals)]
             if len(vals) == 0:
                 continue
 
@@ -691,10 +697,10 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
 
             if c.op == "<=":
                 target = float(np.quantile(vals, mf))
-                new_thr = max(cur, target)  # relax upwards
+                new_thr = max(cur, target)
             elif c.op == ">=":
                 target = float(np.quantile(vals, 1.0 - mf))
-                new_thr = min(cur, target)  # relax downwards
+                new_thr = min(cur, target)
             else:
                 continue
 
@@ -738,17 +744,9 @@ def score_shades(
     proto_row_override: Optional[pd.Series] = None,
     calibration: dict | None = None,
     preference_weights: Optional[dict[str, float]] = None,
-    joint_min_feasible_frac: float = 0.05,  # ✅ exposed knob (default lowered)
-    joint_clamp_to_calibration: bool = True,  # ✅ prevents sat_eff drifting beyond calibrated range
+    joint_min_feasible_frac: float = 0.05,
+    joint_clamp_to_calibration: bool = True,
 ) -> pd.DataFrame:
-    """
-    CORE scoring function.
-
-    Contract:
-      - No implicit file IO.
-      - calibration must be provided.
-      - if lambda_preference != 0, preference_weights must be provided.
-    """
     if calibration is None:
         raise ValueError(
             "Missing 'calibration' dict. Pass it explicitly (loaded via io/assets or load_scoring_calibration(path))."
@@ -775,7 +773,6 @@ def score_shades(
     deltaE = _delta_e_to_proto(work, proto_row)
     deltaE_n = _delta_e_norm(deltaE, calibration)
 
-    # ✅ JOINT feasibility: relax ONLY numeric cutpoints (not level-based); keeps semantics stable.
     constraints_eff = _snap_numeric_cutpoints_to_joint_feasibility(
         work,
         query.constraints,
@@ -789,9 +786,6 @@ def score_shades(
         work, constraints_eff, calibration=calibration
     )
 
-    # -----------------------------
-    # Preference term (FIXED)
-    # -----------------------------
     if float(lambda_preference) != 0.0:
         if preference_weights is None:
             raise ValueError(
@@ -820,6 +814,7 @@ def score_shades(
     else:
         preference_score = 0.0
 
+    # IMPORTANT: constraints are penalties (>=0), never rewards
     score = (
         -deltaE_n
         + float(lambda_preference) * preference_score
@@ -859,7 +854,7 @@ def score_shades(
     out = pd.concat([out, extras_df, penalty_df], axis=1)
     out = out.sort_values(["score", "product_id", "shade_id"], ascending=[False, True, True], kind="mergesort")
 
-    # deterministic due to stable sort + tie-break
+    # NOTE: keep your original dedupe policy; it can hide some shades if urls are shared.
     out = out.drop_duplicates(subset=["url", "shade_name"], keep="first")
 
     out = out.reset_index(drop=True)
@@ -870,6 +865,31 @@ def score_shades(
 # ---------------------------------------------------------------------
 # Script-friendly wrapper (explicit paths; defaults only for scripts)
 # ---------------------------------------------------------------------
+
+
+# Single canonical regex (avoid duplicate definitions / divergence)
+_CONSTRAINT_RE = re.compile(
+    r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*((?:low|medium|high|very_high)|(?:[0-9]*\.?[0-9]+))\s*:\s*([0-9]*\.?[0-9]+)\s*$"
+)
+
+
+def _parse_constraint(s: str) -> Constraint:
+    raw = s.strip()
+    m = _CONSTRAINT_RE.match(raw)
+    if not m:
+        raise ValueError(f"Invalid constraint '{raw}'.")
+    dim, op, lvl_or_num, w_str = m.groups()
+
+    level = None
+    cutpoint = None
+    if lvl_or_num in {"low", "medium", "high", "very_high"}:
+        level = lvl_or_num
+    else:
+        cutpoint = float(lvl_or_num)
+
+    c = Constraint(dim=str(dim), op=str(op), level=level, cutpoint=cutpoint, weight=float(w_str))
+    _check_constraint(c)
+    return c
 
 
 def score_inventory(
@@ -884,25 +904,19 @@ def score_inventory(
     calibration_path: Optional[str | Path] = None,
     preference_weights_path: Optional[str | Path] = None,
 ) -> pd.DataFrame:
-    """
-    Script/test-friendly entrypoint.
-    """
     cal_path = Path(calibration_path) if calibration_path is not None else _default_calibration_for_scripts_only()
     cal = load_scoring_calibration(cal_path)
 
-    asg_path = Path(assignments_path) if assignments_path is not None else _default_assignments_for_scripts_only()
+    asg = Path(assignments_path) if assignments_path is not None else _default_assignments_for_scripts_only()
 
     if prototypes is None:
         proto_path = _default_prototypes_for_scripts_only()
         prototypes = pd.read_csv(proto_path)
 
-    df = _ensure_cluster_id(inventory, prototypes, asg_path)
+    df = _ensure_cluster_id(inventory, prototypes, asg)
 
     mix, constraint_tokens = _parse_mix_and_constraints(constraints)
-
-    parsed: List[Constraint] = []
-    for s in constraint_tokens:
-        parsed.append(_parse_constraint(s))
+    parsed: List[Constraint] = [_parse_constraint(s) for s in constraint_tokens]
 
     query = QuerySpec(like_cluster_id=int(cluster_id), constraints=tuple(parsed))
 
@@ -940,36 +954,13 @@ def score_inventory(
 # CLI
 # ---------------------------------------------------------------------
 
-_CONSTRAINT_RE = re.compile(
-    r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*((?:low|medium|high|very_high)|(?:[0-9]*\.?[0-9]+))\s*:\s*([0-9]*\.?[0-9]+)\s*$"
-)
-
-
-def _parse_constraint(s: str) -> Constraint:
-    raw = s.strip()
-    m = _CONSTRAINT_RE.match(raw)
-    if not m:
-        raise ValueError(f"Invalid constraint '{raw}'.")
-    dim, op, lvl_or_num, w_str = m.groups()
-
-    level = None
-    cutpoint = None
-    if lvl_or_num in {"low", "medium", "high", "very_high"}:
-        level = lvl_or_num
-    else:
-        cutpoint = float(lvl_or_num)
-
-    c = Constraint(dim=str(dim), op=str(op), level=level, cutpoint=cutpoint, weight=float(w_str))
-    _check_constraint(c)
-    return c
-
 
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--cluster-id", type=int, required=True)
     p.add_argument("--constraint", action="append", default=[])
     p.add_argument("--lambda-constraints", type=float, default=1.0)
-    p.add_argument("--lambda-preference", type=float, default=1.0)
+    p.add_argument("--lambda-preference", type=float, default=0.0)  # FIX: default should be off
     p.add_argument("--infile", type=str, default=str(_default_enriched_for_scripts_only()))
     p.add_argument("--prototypes", type=str, default=str(_default_prototypes_for_scripts_only()))
     p.add_argument("--assignments", type=str, default=str(_default_assignments_for_scripts_only()))

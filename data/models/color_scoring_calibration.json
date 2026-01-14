@@ -11,12 +11,59 @@
   "dims": {
     "light_hsl": {
       "level_mode": "relative",
+      "min_pool_n": 120,
       "relative_quantiles": {
-        "low": 0.70,
-        "medium": 0.80,
-        "high": 0.90,
-        "very_high": 0.95
-      }
+        "low": 0.60,
+        "medium": 0.75,
+        "high": 0.88,
+        "very_high": 0.94
+      },
+      "clamp_to_fixed_bounds": false
+    },
+    "sat_hsl": {
+      "level_mode": "relative",
+      "min_pool_n": 120,
+      "relative_quantiles": {
+        "low": 0.60,
+        "medium": 0.75,
+        "high": 0.88,
+        "very_high": 0.94
+      },
+      "clamp_to_fixed_bounds": false
+    },
+    "depth": {
+      "level_mode": "relative",
+      "min_pool_n": 120,
+      "relative_quantiles": {
+        "low": 0.60,
+        "medium": 0.75,
+        "high": 0.92,
+        "very_high": 0.98
+      },
+      "clamp_to_fixed_bounds": false
+    },
+    "colorfulness": {
+      "level_mode": "relative",
+      "min_pool_n": 120,
+      "relative_quantiles": {
+        "low": 0.60,
+        "medium": 0.75,
+        "high": 0.92,
+        "very_high": 0.98
+      },
+      "clamp_to_fixed_bounds": false
+    },
+
+    "warmth": {
+      "level_mode": "relative",
+      "min_pool_n": 120,
+      "relative_quantiles": {
+        "low": 0.60,
+        "medium": 0.75,
+        "high": 0.88,
+        "very_high": 0.94
+      },
+      "clamp_to_fixed_bounds": false
     }
   },
 
@@ -94,6 +141,7 @@
       "very_high": 8.341953984440789
     }
   },
+
   "scale_iqr": {
     "C_lab": 22.476674473369727,
     "H_lab_deg": 12.47602906032867,
@@ -108,6 +156,7 @@
     "sat_hsl": 0.2674117100932861,
     "warmth": 10.885363571054224
   },
+
   "scale_std": {
     "C_lab": 16.474458008676482,
     "H_lab_deg": 56.28398896729196,
@@ -122,8 +171,9 @@
     "sat_hsl": 0.1975731940437804,
     "warmth": 9.911524440756565
   },
+
   "notes": {
-    "constraint_thresholds": "Fixed quantiles computed on reference dataset; at scoring time, dims may optionally interpret level cutpoints relatively (see dims.*.level_mode).",
+    "constraint_thresholds": "Style dims (light_hsl, sat_hsl, depth, colorfulness, warmth) use relative quantiles computed per candidate pool (cluster-local) when pool_n>=min_pool_n; fixed 'thresholds' remain as dataset references and for dims left in absolute mode.",
     "penalty_normalization": "gap / scale_iqr[dim] (fallback scale_std).",
     "deltaE_normalization": "deltaE / deltaE_ref"
   }

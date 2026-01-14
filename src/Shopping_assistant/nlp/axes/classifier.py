@@ -17,7 +17,7 @@ Contract:
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from Shopping_assistant.nlp.schema import Axis
 from Shopping_assistant.utils.optional_deps import require
@@ -40,50 +40,35 @@ class AxisPred:
 
 
 # ---------------------------------------------------------------------------
-# Prototypes (small & conceptual; do NOT grow into a thesaurus)
+# Axis "anchors": descriptions, not synonym lists (keeps things dynamic)
 # ---------------------------------------------------------------------------
 
-_AXIS_PROTOTYPES: Dict[Axis, Tuple[str, ...]] = {
+# Incorrect (removed): prototype lists containing degree/negation words (too/not/very).
+# We classify *axis only* here. Direction/strength/negation are handled upstream in constraints.py.
+_AXIS_DESCRIPTIONS: Dict[Axis, Tuple[str, ...]] = {
     Axis.BRIGHTNESS: (
-        "bright",
-        "light",
-        "pale",
-        "washed out",
-        "too bright",
-        "not too bright",
+        "Brightness / lightness of a lipstick shade (how light vs pale vs bright it looks).",
+        "Perceived lightness: pale or washed-out vs bright and light.",
     ),
     Axis.DEPTH: (
-        "dark",
-        "deep",
-        "rich",
-        "very dark",
-        "not too dark",
+        "Depth of a lipstick shade (how dark and rich it feels).",
+        "Perceived depth: deep/rich/dark vs not deep.",
     ),
     Axis.SATURATION: (
-        "saturated",
-        "intense",
-        "vivid",
-        "high saturation",
-        "too intense",
+        "Saturation/chroma of a lipstick shade (muted/desaturated vs saturated/intense).",
+        "How colorful vs muted the shade is (desaturated vs saturated).",
     ),
     Axis.VIBRANCY: (
-        "neon",
-        "vibrant",
-        "electric",
-        "fluorescent",
-        "too neon",
+        "Vibrancy/neonness of a lipstick shade (neon/electric/fluorescent/flashy vs not neon).",
+        "How punchy/flashy the color feels (neon/fluorescent vs quiet).",
     ),
     Axis.CLARITY: (
-        "crisp",
-        "muddy",
-        "soft",
-        "hazy",
-        "clear",
-        "not muddy",
+        "Clarity/cleanliness/softness of a lipstick shade (crisp/clear/clean vs soft/hazy/muddy).",
+        "How clean vs muddy/soft/hazy the shade appears.",
     ),
 }
 
-_PROTOTYPES_VERSION = "v1"
+_PROTOTYPES_VERSION = "v3_axis_descriptions"
 
 
 def _canon_label(s: str) -> str:
@@ -105,7 +90,7 @@ def _cosine_sim_row(np: Any, a: Any, B: Any) -> Any:
 def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str, torch: Any) -> Any:
     device = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
 
-    # 1) Chemin robuste: construire les modules ST explicitement
+    # 1) Robust path: build ST modules explicitly
     try:
         from sentence_transformers import models  # type: ignore
 
@@ -122,7 +107,7 @@ def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str
         )
         model = SentenceTransformer(modules=[word, pooling], device=device)
     except Exception:
-        # 2) Fallback: constructeur classique
+        # 2) Fallback: standard constructor
         try:
             model = SentenceTransformer(
                 model_name,
@@ -150,7 +135,10 @@ def make_axis_classifier_fn(
 ) -> AxisClassifier:
     """
     Does:
-        Build an offline axis classifier using embedding similarity to axis prototypes.
+        Build an offline axis classifier using embedding similarity to axis descriptions.
+
+    Important:
+        This classifier predicts the *axis only*. Negation/degree/direction are handled upstream.
     """
     np = require("numpy", extra="numpy", purpose="axis embedding classifier")
     torch = require("torch", extra="torch", purpose="axis embedding classifier (device selection)")
@@ -159,23 +147,22 @@ def make_axis_classifier_fn(
     if SentenceTransformer is None:
         raise RuntimeError("sentence_transformers.SentenceTransformer not found")
 
-    # ✅ FIX: safe loading (prevents meta-tensor crash)
     model = _load_sentence_transformer_safe(
         SentenceTransformer=SentenceTransformer,
         model_name=model_name,
         torch=torch,
     )
 
-    axes: List[Axis] = list(_AXIS_PROTOTYPES.keys())
+    axes: List[Axis] = list(_AXIS_DESCRIPTIONS.keys())
     axis_texts: List[str] = []
     axis_offsets: List[Tuple[int, int]] = []
 
     cur = 0
     for ax in axes:
-        protos = list(_AXIS_PROTOTYPES[ax])
-        axis_texts.extend(protos)
-        axis_offsets.append((cur, cur + len(protos)))
-        cur += len(protos)
+        texts = list(_AXIS_DESCRIPTIONS[ax])
+        axis_texts.extend(texts)
+        axis_offsets.append((cur, cur + len(texts)))
+        cur += len(texts)
 
     # Normalize embeddings once (faster + stable cosine)
     P = model.encode(axis_texts, convert_to_numpy=True, show_progress_bar=False)
@@ -197,6 +184,7 @@ def make_axis_classifier_fn(
 
         # Optional tie-break: add context only if close call (keeps cache stable)
         ctx = _canon_label(context)
+        v_ctx = None
         if ctx:
             v_ctx = _encode_one(f"{lab} | {ctx}")
 
@@ -211,11 +199,12 @@ def make_axis_classifier_fn(
         margin = float(best_sim - second_sim)
 
         # If borderline, use context vector to re-rank (optional)
-        if ctx and (best_sim < (min_sim + 0.05) or margin < (min_margin + 0.03)):
+        if v_ctx is not None and (best_sim < (min_sim + 0.05) or margin < (min_margin + 0.03)):
             sims_axis_ctx: Dict[Axis, float] = {}
             for ax, (a0, a1) in zip(axes, axis_offsets):
                 sims = _cosine_sim_row(np, v_ctx, P[a0:a1])
                 sims_axis_ctx[ax] = float(np.max(sims))
+
             ranked2 = sorted(sims_axis_ctx.items(), key=lambda x: x[1], reverse=True)
             best_ax2, best_sim2 = ranked2[0]
             second_sim2 = ranked2[1][1] if len(ranked2) > 1 else -1.0
@@ -224,7 +213,6 @@ def make_axis_classifier_fn(
             # adopt if it improves confidence or separation
             if best_sim2 > best_sim + 0.01 or margin2 > margin + 0.01:
                 best_ax, best_sim, margin = best_ax2, float(best_sim2), float(margin2)
-                sims_axis = sims_axis_ctx
                 ranked = ranked2
 
         if best_sim < float(min_sim) or margin < float(min_margin):
