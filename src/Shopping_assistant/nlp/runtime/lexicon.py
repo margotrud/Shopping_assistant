@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -108,11 +109,6 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
       - Never create y-stripped bases when missing.
         This prevents noun truncation like "berry" -> "berr",
         "strawberry" -> "strawberr", etc.
-
-    Example:
-      - if "brownish" exists but "brown" doesn't, create "brown" -> same hex.
-      - if "peachy" exists and "peach" does NOT exist, we do NOT auto-create "peach".
-        (If you want "peach", it should exist as a real lexicon entry.)
     """
     existing = set(idx.keys())
 
@@ -170,12 +166,29 @@ def _prefer_variant(token: str, index: Dict[str, Dict[str, Any]]) -> str:
     return present[0]
 
 
+def _fuzzy_ratio(a: str, b: str) -> float:
+    return 100.0 * SequenceMatcher(None, a, b).ratio()
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedColor:
+    alias: str
+    name: str
+    hex: str
+    source: str
+    score: float
+
+
 @dataclass(frozen=True)
 class ColorLexicon:
     """
     Loads data/nlp/color_lexicon.json and exposes:
       - raw_index: alias -> info
       - mention scan using token-variant normalization (peachy/reddish/brownish)
+
+    API-compat:
+      - resolve() returns ResolvedColor objects (attribute access),
+        as expected by callers in nlp/llm/analyze_clauses.py.
     """
 
     raw_index: Dict[str, Dict[str, Any]]
@@ -212,11 +225,86 @@ class ColorLexicon:
                 "source": str(v.get("source") or ""),
             }
 
-        # Add missing base aliases dynamically (no manual mapping)
-        # (y-stripping is blocked from materialization by _derive_missing_base_aliases)
         _derive_missing_base_aliases(idx)
-
         return cls(raw_index=idx)
+
+    def resolve(
+        self,
+        query: str,
+        *,
+        topk: int = 1,
+        fuzzy_cutoff: float = 75.0,
+        use_semantic: bool = False,
+    ) -> List[ResolvedColor]:
+        """
+        Resolve a free-text candidate to lexicon entries.
+
+        Returns:
+          List[ResolvedColor] with attribute access (.hex, .name, ...).
+
+        Notes:
+          - use_semantic is accepted for compatibility but ignored here.
+          - fuzzy matching uses SequenceMatcher as a cheap runtime fallback.
+        """
+        _ = use_semantic  # API compat
+
+        q = _norm_key(query)
+        if not q or q in DENY_KEYS:
+            return []
+
+        k_best = q
+        info = self.raw_index.get(k_best)
+        if info:
+            return [
+                ResolvedColor(
+                    alias=k_best,
+                    name=str(info.get("name", k_best)),
+                    hex=str(info.get("hex")),
+                    source=str(info.get("source", "")),
+                    score=100.0,
+                )
+            ][: max(1, int(topk))]
+
+        # single-token variant preference
+        if " " not in q:
+            k2 = _prefer_variant(q, self.raw_index)
+            if k2 and k2 != q:
+                info2 = self.raw_index.get(k2)
+                if info2:
+                    return [
+                        ResolvedColor(
+                            alias=k2,
+                            name=str(info2.get("name", k2)),
+                            hex=str(info2.get("hex")),
+                            source=str(info2.get("source", "")),
+                            score=99.0,
+                        )
+                    ][: max(1, int(topk))]
+
+        # fuzzy fallback (top-1)
+        best_k: Optional[str] = None
+        best_s = 0.0
+        for k in self.raw_index.keys():
+            if " " not in q and abs(len(k) - len(q)) > 6:
+                continue
+            s = _fuzzy_ratio(q, k)
+            if s > best_s:
+                best_s = s
+                best_k = k
+
+        if best_k is not None and best_s >= float(fuzzy_cutoff):
+            info3 = self.raw_index[best_k]
+            return [
+                ResolvedColor(
+                    alias=best_k,
+                    name=str(info3.get("name", best_k)),
+                    hex=str(info3.get("hex")),
+                    source=str(info3.get("source", "")),
+                    score=float(best_s),
+                )
+            ][: max(1, int(topk))]
+
+        return []
 
     def extract_mentions(self, text: str) -> List[Dict[str, Any]]:
         toks = _norm_text(text).split()
@@ -314,7 +402,6 @@ def load_default_lexicon() -> ColorLexicon:
 
     # Nude: add a single-word business alias (no multiword static combos)
     if "nude" not in lex.raw_index:
-        # pick a neutral base that actually exists (minimal, deterministic)
         for base_key in ("beige", "tan"):
             if base_key in lex.raw_index:
                 base = dict(lex.raw_index[base_key])  # clone

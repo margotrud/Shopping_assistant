@@ -1,10 +1,12 @@
-# src/Shopping_assistant/nlp/parsing/constraints.py
 from __future__ import annotations
 
+import math
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Polarity, Strength
 from Shopping_assistant.nlp.axes.predictor import predict_axis
+from Shopping_assistant.nlp.schema import Axis, Constraint, Direction, Polarity, Strength
+from Shopping_assistant.utils.optional_deps import require
 
 if TYPE_CHECKING:
     from spacy.language import Language
@@ -16,20 +18,14 @@ else:
 
 
 # ---------------------------------------------------------------------
-# Axis mapping: embedding-first + dynamic fallback via axis families
+# Axis mapping
 # ---------------------------------------------------------------------
 
-_AXIS_LEXICON: Dict[str, Axis] = {}  # keep empty by default
-
-_NEG_LEFT = {"not", "no", "nothing"}
-_DEG_LEFT = {"too", "more", "less"}  # comparatives / caps
-
-_INTENSIFIERS = {
-    "very", "really", "so", "extremely", "quite", "super", "highly", "pretty", "rather",
-}
+_AXIS_LEXICON: Dict[str, Axis] = {}
 
 _COLOR_DOMAIN_NOUNS = {
-    "color", "shade", "tone", "tint", "hue", "lipstick", "gloss", "balm", "liner", "stain",
+    "color", "shade", "tone", "tint", "hue",
+    "lipstick", "gloss", "balm", "liner", "stain",
 }
 
 _AXIS_FAMILY: Dict[Axis, str] = {
@@ -105,7 +101,6 @@ def _axis_from_text(
         "axis_query": text,
     }
 
-    # If predictor returns an axis, it is a STRICT pass by definition.
     if getattr(pred, "axis", None) is not None:
         meta["axis_gate"] = "STRICT"
 
@@ -186,7 +181,6 @@ def _family_fallback(
     best_ax = _best_axis_from_pred(pred)
 
     meta: Dict[str, Any] = {}
-
     if best_ax is None:
         return None, meta
 
@@ -282,20 +276,18 @@ def _axis_from_token(
             axis_source="embed",
             debug=True,
         )
-        last_meta2 = dict(meta2)  # keep last attempt meta (no accumulation)
+        last_meta2 = dict(meta2)
         last_fb_meta = {}
 
-        # 1) strict pass
         if axis is not None:
             meta = {
                 **base_meta,
-                **meta2,  # meta matches the winning query
+                **meta2,
                 "axis_query_strategy": "multi_try_first_pass",
                 "axis_gate": meta2.get("axis_gate", "STRICT"),
             }
             return axis, meta
 
-        # 2) family fallback (non-strict) based on THIS pred + THIS query
         best_ax = _best_axis_from_pred(pred)
         if best_ax is not None:
             color_ctx = _context_is_colorish(tok)
@@ -306,18 +298,16 @@ def _axis_from_token(
                 color_context=color_ctx,
             )
             last_fb_meta = dict(fb_meta)
-
             if ax_fb is not None:
                 meta = {
                     **base_meta,
-                    **meta2,     # meta matches the query that produced pred
-                    **fb_meta,   # meta matches the fallback decision for that pred
+                    **meta2,
+                    **fb_meta,
                     "axis_query_strategy": "multi_try_family_fallback",
                     "axis": ax_fb.value,
                 }
                 return ax_fb, meta
 
-    # 3) lexicon fallback
     axis2 = _AXIS_LEXICON.get(lemma)
     if axis2 is not None:
         meta = {
@@ -332,25 +322,95 @@ def _axis_from_token(
         }
         return axis2, meta
 
-    # 4) all failed: return ONLY last attempt meta (no mixed fields)
-    meta = {
-        **base_meta,
-        **last_meta2,
-        **last_fb_meta,
-        "axis_query_strategy": "multi_try_all_failed",
-    }
+    meta = {**base_meta, **last_meta2, **last_fb_meta, "axis_query_strategy": "multi_try_all_failed"}
     return None, meta
 
 
 # ---------------------------------------------------------------------
-# Robust context signals
+# NON-STATIC negation + degree + axis-extremeness (NO word lists)
 # ---------------------------------------------------------------------
 
 def _has_negation(tok: Token) -> bool:
     return any(ch.dep_ == "neg" for ch in tok.children)
 
 
-def _has_negation_anywhere(tok: Token, *, max_hops: int = 3, window: int = 3) -> bool:
+def _advmods(tok: Token) -> List[Token]:
+    out = [ch for ch in tok.children if ch.dep_ == "advmod" and ch.pos_ == "ADV"]
+    return sorted({t.i: t for t in out}.values(), key=lambda t: t.i)
+
+
+def _has_degree_morph(tok: Token) -> bool:
+    try:
+        deg = tok.morph.get("Degree") or []
+        return any(d in {"Cmp", "Sup"} for d in deg)
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _get_st_model(model_name: str):
+    st = require(
+        "sentence_transformers",
+        extra="sentence-transformers",
+        purpose="constraints: non-static degree/negation scoring",
+    )
+    SentenceTransformer = getattr(st, "SentenceTransformer", None)
+    if SentenceTransformer is None:
+        raise ImportError("sentence_transformers.SentenceTransformer not found")
+    return SentenceTransformer(_normalize_model_name(model_name))
+
+
+def _cos_sim(a, b) -> float:
+    denom = float((a**2).sum() ** 0.5) * float((b**2).sum() ** 0.5)
+    if denom <= 0:
+        return 0.0
+    return float((a @ b) / denom)
+
+
+@lru_cache(maxsize=256)
+def _op_anchor_vecs(model_name: str):
+    m = _get_st_model(model_name)
+    v_neg = m.encode("negation (denial / absence)", normalize_embeddings=False)
+    v_cap = m.encode("too much / excessive", normalize_embeddings=False)
+    v_more = m.encode("increase / more", normalize_embeddings=False)
+    v_less = m.encode("decrease / less", normalize_embeddings=False)
+    return v_neg, v_cap, v_more, v_less
+
+
+@lru_cache(maxsize=4096)
+def _token_vec(token_lemma: str, *, model_name: str):
+    m = _get_st_model(model_name)
+    return m.encode((token_lemma or "").strip().lower(), normalize_embeddings=False)
+
+
+def _is_neg_cue_token(t: Token, *, model_name: str) -> bool:
+    if t.dep_ == "neg":
+        return True
+    v = _token_vec(_norm_text_piece(t.lemma_), model_name=model_name)
+    v_neg, _, _, _ = _op_anchor_vecs(model_name)
+    return _cos_sim(v, v_neg) >= 0.45
+
+
+def _neg_cues_in_window(tok: Token, *, window: int, model_name: str) -> List[Token]:
+    doc = tok.doc
+    out: List[Token] = []
+    for j in range(1, window + 1):
+        i = tok.i - j
+        if i < 0:
+            break
+        t = doc[i]
+        if _is_neg_cue_token(t, model_name=model_name):
+            out.append(t)
+    return sorted({t.i: t for t in out}.values(), key=lambda t: t.i)
+
+
+def _has_negation_anywhere(
+    tok: Token,
+    *,
+    max_hops: int = 3,
+    window: int = 3,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> bool:
     if _has_negation(tok):
         return True
 
@@ -363,73 +423,249 @@ def _has_negation_anywhere(tok: Token, *, max_hops: int = 3, window: int = 3) ->
             return True
         cur = head
 
+    return bool(_neg_cues_in_window(tok, window=window, model_name=model_name))
+
+
+def _degree_operator(tok: Token, *, model_name: str = "all-MiniLM-L6-v2", window: int = 4) -> Tuple[str, float]:
+    """
+    Returns (op, score) where op in {"CAP","MORE","LESS","NONE"}.
+
+    Strategy:
+      1) Collect ADV-like candidates (advmods + left window)
+      2) Deterministic catch for grammatical operators: too/more/less
+         - also scan subtree (and optionally head subtree) because the constraint
+           candidate token might not be the adjective itself.
+      3) Semantic fallback to operator anchors
+    """
     doc = tok.doc
+    cands: List[Token] = []
+
+    cands.extend(_advmods(tok))
+
+    head = getattr(tok, "head", None)
+    if head is not None and head is not tok:
+        cands.extend(_advmods(head))
+
     for j in range(1, window + 1):
         i = tok.i - j
         if i < 0:
             break
-        if doc[i].lemma_.lower() in _NEG_LEFT or _norm_text_piece(doc[i].text) == "not":
-            return True
+        t = doc[i]
+        lem = _norm_text_piece(t.lemma_) or (t.text or "").strip().lower()
+        if t.pos_ == "ADV" or lem in {"too", "more", "less"}:
+            cands.append(t)
 
-    return False
+    def _subtree_ops(root: Token) -> Optional[str]:
+        for t in root.subtree:
+            lem = _norm_text_piece(t.lemma_) or (t.text or "").strip().lower()
+            if lem == "too":
+                return "CAP"
+            if lem == "more":
+                return "MORE"
+            if lem == "less":
+                return "LESS"
+        return None
+
+    op_sub = _subtree_ops(tok)
+    if op_sub is None and head is not None and head is not tok:
+        op_sub = _subtree_ops(head)
+
+    if op_sub is not None:
+        return op_sub, 1.0
+
+    cands = sorted({t.i: t for t in cands}.values(), key=lambda t: t.i)
+    if not cands:
+        return "NONE", 0.0
+
+    for a in cands:
+        lem = _norm_text_piece(a.lemma_) or (a.text or "").strip().lower()
+        if lem == "too":
+            return "CAP", 1.0
+        if lem == "more":
+            return "MORE", 1.0
+        if lem == "less":
+            return "LESS", 1.0
+
+    _v_neg, v_cap, v_more, v_less = _op_anchor_vecs(model_name)
+    best_op = "NONE"
+    best_score = 0.0
+    for a in cands:
+        v = _token_vec(_norm_text_piece(a.lemma_), model_name=model_name)
+        s_cap = _cos_sim(v, v_cap)
+        s_more = _cos_sim(v, v_more)
+        s_less = _cos_sim(v, v_less)
+        op, sc = max((("CAP", s_cap), ("MORE", s_more), ("LESS", s_less)), key=lambda x: x[1])
+        if sc > best_score:
+            best_op, best_score = op, float(sc)
+
+    if best_score < 0.45:
+        return "NONE", float(best_score)
+    return best_op, float(best_score)
 
 
-def _degree_adverbs(tok: Token) -> List[Token]:
-    out = [ch for ch in tok.children if ch.dep_ == "advmod" and ch.pos_ == "ADV"]
-
-    doc = tok.doc
-    for j in (tok.i - 1, tok.i - 2, tok.i - 3):
-        if j >= 0:
-            t = doc[j]
-            lem = t.lemma_.lower()
-            if t.pos_ == "ADV" and (lem in _DEG_LEFT or lem in _INTENSIFIERS):
-                out.append(t)
-
-    out = sorted({t.i: t for t in out}.values(), key=lambda t: t.i)
-    return out
+@lru_cache(maxsize=256)
+def _degree_pole_vecs(model_name: str):
+    m = _get_st_model(model_name)
+    low = m.encode("slightly / mildly", normalize_embeddings=False)
+    high = m.encode("extremely / intensely", normalize_embeddings=False)
+    return low, high
 
 
-def _has_degree_anywhere(tok: Token) -> bool:
-    return any(adv.lemma_.lower() in (_DEG_LEFT | _INTENSIFIERS) for adv in _degree_adverbs(tok))
+def _softmax2(a: float, b: float, *, t: float = 0.08) -> float:
+    ea = math.exp(a / t)
+    eb = math.exp(b / t)
+    return eb / (ea + eb)
 
 
-def _degree_strength(tok: Token) -> Strength:
-    deg = _degree_adverbs(tok)
+@lru_cache(maxsize=4096)
+def _adv_intensity_score(adv_lemma: str, *, model_name: str) -> float:
+    w = (adv_lemma or "").strip().lower()
+    if not w:
+        return 0.0
 
-    if not deg:
-        return Strength.STRONG if _has_negation_anywhere(tok) else Strength.MED
+    v = _token_vec(w, model_name=model_name)
+    low, high = _degree_pole_vecs(model_name)
 
-    if len(deg) >= 2:
+    s_low = _cos_sim(v, low)
+    s_high = _cos_sim(v, high)
+
+    return float(_softmax2(s_low, s_high, t=0.08))
+
+
+@lru_cache(maxsize=256)
+def _axis_poles(model_name: str) -> Dict[Axis, Tuple[str, str, str]]:
+    return {
+        Axis.BRIGHTNESS: ("dark", "bright", "neutral"),
+        Axis.DEPTH: ("light", "deep", "neutral"),
+        Axis.SATURATION: ("muted", "saturated", "neutral"),
+        Axis.VIBRANCY: ("dull", "vivid", "neutral"),
+        Axis.CLARITY: ("muddy", "clear", "neutral"),
+    }
+
+
+@lru_cache(maxsize=4096)
+def _text_vec(text: str, *, model_name: str):
+    m = _get_st_model(model_name)
+    return m.encode((text or "").strip().lower(), normalize_embeddings=False)
+
+
+def _axis_extremeness(tok: Token, *, axis: Axis, model_name: str) -> Tuple[float, Direction]:
+    lemma = _norm_text_piece(tok.lemma_)
+    if not lemma:
+        return 0.0, Direction.RAISE
+
+    low, high, neu = _axis_poles(model_name)[axis]
+
+    v = _text_vec(lemma, model_name=model_name)
+    v_low = _text_vec(low, model_name=model_name)
+    v_high = _text_vec(high, model_name=model_name)
+    v_neu = _text_vec(neu, model_name=model_name)
+
+    s_low = _cos_sim(v, v_low)
+    s_high = _cos_sim(v, v_high)
+    s_neu = _cos_sim(v, v_neu)
+
+    best_pole = max(s_low, s_high)
+    delta = best_pole - s_neu
+
+    x = 8.0 * delta
+    ext = float(1.0 / (1.0 + math.exp(-x)))
+
+    direction = Direction.RAISE if s_high >= s_low else Direction.LOWER
+    return max(0.0, min(1.0, ext)), direction
+
+
+# ----------------------------
+# FIX: API alignment (accept axis=...)
+# ----------------------------
+
+def _degree_score(
+    tok: Token,
+    *,
+    axis: Optional[Axis] = None,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> float:
+    # axis currently unused (kept for API consistency and future axis-aware tuning)
+    if _has_negation_anywhere(tok, model_name=model_name):
+        return 0.9
+    if _has_degree_morph(tok):
+        return 0.85
+
+    base_word = _adv_intensity_score(_norm_text_piece(tok.lemma_), model_name=model_name)
+
+    advs = _advmods(tok)
+    if not advs:
+        op, op_sc = _degree_operator(tok, model_name=model_name)
+        if op != "NONE":
+            return max(0.0, min(1.0, 0.45 + 0.45 * op_sc + 0.10 * base_word))
+        return float(max(0.0, min(1.0, 0.35 * base_word)))
+
+    base = 1.0 - math.exp(-0.9 * len(advs))
+    sem = max(_adv_intensity_score(_norm_text_piece(a.lemma_), model_name=model_name) for a in advs)
+
+    op, op_sc = _degree_operator(tok, model_name=model_name)
+    op_boost = 0.0 if op == "NONE" else max(0.0, min(1.0, 0.25 + 0.35 * op_sc))
+
+    return max(0.0, min(1.0, 0.25 * base + 0.50 * sem + 0.15 * op_boost + 0.10 * base_word))
+
+
+def _has_degree_anywhere(
+    tok: Token,
+    *,
+    axis: Axis,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> bool:
+    return _degree_score(tok, axis=axis, model_name=model_name) > 0.05
+
+
+def _degree_strength(
+    tok: Token,
+    *,
+    axis: Axis,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> Strength:
+    s = _degree_score(tok, axis=axis, model_name=model_name)
+    if s >= 0.75:
         return Strength.STRONG
-
-    lemma = deg[0].lemma_.lower()
-    if lemma in {"more", "less"}:
+    if s >= 0.35:
         return Strength.MED
-    return Strength.STRONG
+    return Strength.WEAK
 
 
-def _direction_from_context(tok: Token) -> Direction:
-    direction = Direction.RAISE
-    has_too = False
+def _invert_dir(d: Direction) -> Direction:
+    return Direction.LOWER if d == Direction.RAISE else Direction.RAISE
 
-    for adv in _degree_adverbs(tok):
-        lemma = adv.lemma_.lower()
-        if lemma == "less":
-            direction = Direction.LOWER
-        elif lemma == "more":
-            direction = Direction.RAISE
-        elif lemma == "too":
-            direction = Direction.LOWER
-            has_too = True
 
-    if _has_negation_anywhere(tok) and not has_too:
-        direction = Direction.LOWER if direction == Direction.RAISE else Direction.RAISE
+def _direction_from_context(
+    tok: Token,
+    *,
+    axis: Axis,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> Direction:
+    """
+    Compute direction using:
+      - base preference implied by the adjective vs axis poles (axis_extremeness_dir)
+      - operator: MORE keeps base, LESS/CAP invert base
+      - negation: invert unless operator is CAP (i.e., "not too X" is already a cap)
+    """
+    _ext, base_dir = _axis_extremeness(tok, axis=axis, model_name=model_name)
+
+    op, _ = _degree_operator(tok, model_name=model_name)
+
+    if op in {"LESS", "CAP"}:
+        direction = _invert_dir(base_dir)
+    else:
+        # MORE or NONE
+        direction = base_dir
+
+    if _has_negation_anywhere(tok, model_name=model_name) and op != "CAP":
+        direction = _invert_dir(direction)
 
     return direction
 
 
-def _evidence(tok: Token) -> tuple[str, int, int]:
-    toks = [tok]
+def _evidence(tok: Token, *, model_name: str = "all-MiniLM-L6-v2") -> tuple[str, int, int]:
+    toks: List[Token] = [tok]
 
     for ch in tok.children:
         if ch.dep_ == "neg":
@@ -437,17 +673,14 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
         elif ch.dep_ == "advmod" and ch.pos_ == "ADV":
             toks.append(ch)
 
-    for adv in _degree_adverbs(tok):
-        toks.append(adv)
+    toks.extend(_neg_cues_in_window(tok, window=3, model_name=model_name))
 
     doc = tok.doc
-    for base in list(toks):
-        j = base.i - 1
-        if j >= 0 and (doc[j].lemma_.lower() in _NEG_LEFT or _norm_text_piece(doc[j].text) == "not"):
+    for j in (tok.i - 1, tok.i - 2, tok.i - 3):
+        if j >= 0 and doc[j].pos_ == "ADV":
             toks.append(doc[j])
 
     toks = sorted({t.i: t for t in toks}.values(), key=lambda t: t.i)
-
     start = toks[0].idx
     last = toks[-1]
     end = last.idx + len(last.text)
@@ -456,21 +689,43 @@ def _evidence(tok: Token) -> tuple[str, int, int]:
     return evidence, int(start), int(end)
 
 
+# ---------------------------------------------------------------------
+# Candidate selection fixes (STOP treating domain nouns like "lipstick" as constraints)
+# ---------------------------------------------------------------------
+
+def _redirect_to_amod_adj(tok: Token) -> Token:
+    """
+    If tok is a NOUN/PROPN and has adjectival modifiers (amod ADJ),
+    we want to score/extract on the ADJ (e.g., "bright") not on the noun ("lipstick").
+    """
+    if tok.pos_ in {"NOUN", "PROPN"}:
+        amods = [ch for ch in tok.children if ch.dep_ == "amod" and ch.pos_ == "ADJ"]
+        if amods:
+            return sorted(amods, key=lambda t: t.i)[-1]
+    return tok
+
+
 def _is_adjectival_noun(tok: Token) -> bool:
     if tok.pos_ != "NOUN":
         return False
     if tok.is_stop or tok.is_punct or tok.is_space:
         return False
+
+    # critical: never allow product/color domain nouns
+    if _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
+        return False
+
     if len(tok.text) <= 2:
         return False
+
+    # If the NOUN itself is used adjectivally (rare), allow; but avoid amod-only nouns
     if tok.dep_ in {"amod", "acomp", "attr"}:
         return True
-    if any(
-        ch.dep_ == "advmod"
-        and ch.lemma_.lower() in (_DEG_LEFT | _INTENSIFIERS | {"too"})
-        for ch in tok.children
-    ):
+
+    # NOUN with advmods can be an adjectival usage (rare) - still blocked for domain nouns above
+    if any(ch.dep_ == "advmod" and ch.pos_ == "ADV" for ch in tok.children):
         return True
+
     return False
 
 
@@ -479,18 +734,25 @@ def _is_constraint_candidate(tok: Token) -> bool:
         return False
     if len(tok.text) <= 2:
         return False
-
     if tok.pos_ in {"VERB", "AUX"}:
         return False
 
     if tok.pos_ == "ADJ":
         return True
+
     if _is_adjectival_noun(tok):
         return True
 
     if _has_negation(tok) and tok.pos_ in {"ADJ", "ADV", "NOUN"}:
+        # still block domain nouns
+        if tok.pos_ == "NOUN" and _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
+            return False
         return True
-    if any(ch.dep_ == "advmod" and ch.lemma_.lower() in (_DEG_LEFT | _INTENSIFIERS) for ch in tok.children):
+
+    if any(ch.dep_ == "advmod" and ch.pos_ == "ADV" for ch in tok.children):
+        # still block domain nouns
+        if tok.pos_ == "NOUN" and _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
+            return False
         return True
 
     return False
@@ -505,10 +767,6 @@ def _head_is_domain_noun(tok: Token) -> bool:
     return _norm_text_piece(head.lemma_) in _COLOR_DOMAIN_NOUNS
 
 
-# ---------------------------------------------------------------------
-# Portfolio-facing hygiene: quality tag + dedup/merge
-# ---------------------------------------------------------------------
-
 def _quality_label(*, axis_gate: str, conf: float, margin: float) -> str:
     gate = (axis_gate or "").upper()
     if gate in {"STRICT", "LEXICON"} and conf >= 0.50 and margin >= 0.10:
@@ -521,7 +779,6 @@ def _quality_label(*, axis_gate: str, conf: float, margin: float) -> str:
 
 
 def _strength_rank(s: Strength) -> int:
-    # defensive: if schema changes, keep stable ordering
     if s == Strength.STRONG:
         return 3
     if s == Strength.MED:
@@ -532,20 +789,12 @@ def _strength_rank(s: Strength) -> int:
 
 
 def _merge_constraints(constraints: List[Constraint]) -> List[Constraint]:
-    """
-    Merge duplicates for portfolio clarity.
-    Key: (axis, direction, clause_id)
-    - confidence: max
-    - strength: max
-    - evidence: unique concatenation
-    - meta: keep meta from the best-confidence item + add evidence_parts
-    """
     buckets: Dict[Tuple[Axis, Direction, int], List[Constraint]] = {}
     for c in constraints:
         buckets.setdefault((c.axis, c.direction, int(c.clause_id)), []).append(c)
 
     out: List[Constraint] = []
-    for key, items in buckets.items():
+    for _key, items in buckets.items():
         if len(items) == 1:
             c0 = items[0]
             meta = dict(c0.meta or {})
@@ -564,7 +813,6 @@ def _merge_constraints(constraints: List[Constraint]) -> List[Constraint]:
             )
             continue
 
-        # choose "best" by confidence, then by strength
         items_sorted = sorted(items, key=lambda c: (float(c.confidence), _strength_rank(c.strength)), reverse=True)
         best = items_sorted[0]
 
@@ -599,10 +847,6 @@ def _merge_constraints(constraints: List[Constraint]) -> List[Constraint]:
     return out
 
 
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
-
 def extract_constraints_from_doc(
     doc: Doc,
     *,
@@ -618,6 +862,9 @@ def extract_constraints_from_doc(
     for tok in doc:
         if not _is_constraint_candidate(tok):
             continue
+
+        # redirect NOUN->amod ADJ early (fixes "lipstick, not too bright")
+        tok = _redirect_to_amod_adj(tok)
 
         lemma = tok.lemma_.lower()
         if blocked_lemmas and lemma in blocked_lemmas:
@@ -637,30 +884,20 @@ def extract_constraints_from_doc(
         axis_gate = str(axis_meta.get("axis_gate", "STRICT"))
         fam = str(axis_meta.get("axis_family") or _family(axis))
 
-        has_signal = bool(_has_negation_anywhere(tok) or _has_degree_anywhere(tok))
+        has_signal = bool(
+            _has_negation_anywhere(tok, model_name=mapper_model)
+            or _has_degree_anywhere(tok, axis=axis, model_name=mapper_model)
+        )
         head_domain = _head_is_domain_noun(tok)
 
-        # -----------------------------------------------------------------
-        # Kill ultra-ambiguous non-STRICT decisions early
-        # (below ~0.03 margin, FAMILY picks are usually noise)
-        # -----------------------------------------------------------------
-        # allow LIGHTNESS family constraints when there is explicit signal (neg/degree),
-        # even if margin is low (dark/bright frequently have tight margins)
         if axis_gate not in {"STRICT", "LEXICON"} and axis_margin < 0.03:
-            has_signal = bool(_has_negation_anywhere(tok) or _has_degree_anywhere(tok))
-            fam = str(axis_meta.get("axis_family") or _family(axis))
             if not (has_signal and fam == "LIGHTNESS"):
                 continue
 
-        # 1) Bare adjectives (likely colors) => drop unless extremely strong evidence
         if not has_signal:
-            if not (axis_score >= 0.55 and axis_margin >= 0.10):
+            if axis_score < 0.40 and axis_margin < 0.02:
                 continue
 
-        # 2) Family/non-STRICT gating:
-        #    - allow LIGHTNESS constraints with signal even with low margin (dark/bright-ish cases)
-        #    - allow CHROMA constraints with signal when NOT modifying a domain noun
-        #      (fixes: "nothing too strong", while still dropping "brown lipstick")
         if axis_gate not in {"STRICT", "LEXICON"}:
             if has_signal and fam == "LIGHTNESS":
                 margin_floor = 0.02
@@ -671,21 +908,22 @@ def extract_constraints_from_doc(
             else:
                 margin_floor = 0.05
                 score_floor = 0.55
-
             if axis_margin < margin_floor or axis_score < score_floor:
                 continue
 
-        has_too = any(adv.lemma_.lower() == "too" for adv in _degree_adverbs(tok))
-        if _has_negation_anywhere(tok) and not has_too:
-            direction = Direction.LOWER
-            strength = Strength.STRONG
-        else:
-            direction = _direction_from_context(tok)
-            strength = _degree_strength(tok)
+        op, _op_sc = _degree_operator(tok, model_name=mapper_model)
 
-        evidence, ev_start, ev_end = _evidence(tok)
+        direction = _direction_from_context(tok, axis=axis, model_name=mapper_model)
+        strength = _degree_strength(tok, axis=axis, model_name=mapper_model)
 
+        # Optional: make negations not look "weak" when they are the only signal
+        if _has_negation_anywhere(tok, model_name=mapper_model) and strength == Strength.WEAK:
+            strength = Strength.MED
+
+        evidence, ev_start, ev_end = _evidence(tok, model_name=mapper_model)
         quality = _quality_label(axis_gate=axis_gate, conf=axis_score, margin=axis_margin)
+        deg_score = float(_degree_score(tok, axis=axis, model_name=mapper_model))
+        ax_ext, ax_dir = _axis_extremeness(tok, axis=axis, model_name=mapper_model)
 
         out.append(
             Constraint(
@@ -699,10 +937,14 @@ def extract_constraints_from_doc(
                 meta={
                     **axis_meta,
                     "tok": tok.text,
-                    "negated": _has_negation_anywhere(tok),
+                    "negated": _has_negation_anywhere(tok, model_name=mapper_model),
                     "children": [(c.text, c.dep_, c.pos_, c.lemma_) for c in tok.children],
                     "direction": direction.value,
                     "strength": strength.value,
+                    "degree_score": deg_score,
+                    "degree_op": op,
+                    "axis_extremeness": float(ax_ext),
+                    "axis_extremeness_dir": ax_dir.value,
                     "evidence_char_start": ev_start,
                     "evidence_char_end": ev_end,
                     "clause_polarity": clause_polarity.value,
@@ -714,7 +956,6 @@ def extract_constraints_from_doc(
             )
         )
 
-    # Portfolio hygiene: merge duplicates (e.g., repeated "not neon" sentences)
     return _merge_constraints(out)
 
 
@@ -764,7 +1005,6 @@ def extract_constraints(
                 mapper_min_margin=mapper_min_margin,
             )
         )
-    # extract_constraints_from_doc already merges per-doc; this is just a safe global merge
     return _merge_constraints(out)
 
 

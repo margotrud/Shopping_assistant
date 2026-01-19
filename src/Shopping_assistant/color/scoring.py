@@ -42,22 +42,31 @@ def _default_enriched_for_scripts_only() -> Path:
 
 def _default_prototypes_for_scripts_only() -> Path:
     """
-    Prefer fused Lab prototypes if present; otherwise fallback to kmeans prototypes.
+    Canonical prototypes for the project (hierarchical clustering).
     """
     root = _project_root_for_scripts_only()
-    fused = root / "data" / "enriched_data" / "color_prototypes_fused_lab.csv"
-    base = root / "data" / "enriched_data" / "color_prototypes_kmeans.csv"
-    return fused if fused.exists() else base
+    p = root / "data" / "enriched_data" / "color_prototypes_hier.csv"
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Missing prototypes file: {p}\n"
+            "Run: python -m Shopping_assistant.color.cluster_colors_hierarchical"
+        )
+    return p
 
 
 def _default_assignments_for_scripts_only() -> Path:
     """
-    Prefer fused assignments if present; otherwise fallback to base assignments.
+    Canonical assignments for the project (hierarchical clustering).
     """
     root = _project_root_for_scripts_only()
-    fused = root / "data" / "enriched_data" / "color_cluster_assignments_fused.csv"
-    base = root / "data" / "enriched_data" / "color_cluster_assignments.csv"
-    return fused if fused.exists() else base
+    p = root / "data" / "enriched_data" / "color_cluster_assignments_hier.csv"
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Missing assignments file: {p}\n"
+            "Run: python -m Shopping_assistant.color.cluster_colors_hierarchical"
+        )
+    return p
+
 
 
 def _default_outdir_for_scripts_only() -> Path:

@@ -231,7 +231,7 @@ def interpret_nlp(
         # -----------------------------
         # Mentions (colors)
         # -----------------------------
-        mention_dicts = extract_mentions_free(clause_text, color_index)
+        mention_dicts = extract_mentions_free(clause_text, color_index, doc=doc)
         mention_names = [
             str(m.get("name") or "").strip()
             for m in mention_dicts

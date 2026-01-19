@@ -33,14 +33,28 @@ _CONSTRAINT_RE = re.compile(
 # Neutral “plain color” regularizer policy:
 # - MUST NOT expand candidate pools (keeps hue family)
 # - MUST be low-weight (tie-breaker only)
-# NOTE: with the updated calibration JSON, warmth can be used as a constraint dim;
-#       we include it here only for "plain color" regularization.
-_NEUTRAL_DIMS = ("light_hsl", "sat_hsl", "warmth")
+_NEUTRAL_DIMS = ("light_hsl", "sat_hsl")
 _NEUTRAL_LEVEL = "medium"
-_NEUTRAL_W = 0.10  # low weight: tie-breaker only
+_NEUTRAL_W = 0.02  # IMPORTANT: was too strong at 0.10 given penalty normalization
 
 # Hue-lock neighborhood: AB-dominant cluster distance (prevents "bright" drifting to peach/coral)
 _NEIGHBOR_WL = 0.05  # 0.0 = strict hue lock, 0.05 = slight lightness tolerance
+
+# When we injected neutral-only constraints, clamp constraint influence (tie-breaker)
+_NEUTRAL_LAMBDA_MAX = 0.35
+
+# Columns we want to preserve in the returned df for explain/debug/UX
+_EXPLAIN_COLS = (
+    "light_hsl",
+    "sat_hsl",
+    "warmth",
+    "depth",
+    "colorfulness",
+    "L_lab",
+    "C_lab",
+    "a_lab",
+    "b_lab",
+)
 
 
 def _parse_constraint_token(token: str) -> Constraint:
@@ -288,6 +302,7 @@ def _is_neutral_regularizer_only(cons: tuple[Constraint, ...]) -> bool:
 
         got.add((str(c.dim), str(c.op), str(c.level)))
 
+        # Must remain light-weight. If you raise _NEUTRAL_W, this guard prevents mislabeling.
         if float(getattr(c, "weight", 0.0) or 0.0) > 0.35:
             return False
 
@@ -398,7 +413,7 @@ def _pick_candidate_clusters_dynamic(
     P = p[["L_lab", "a_lab", "b_lab"]].to_numpy(float)
     pid = p["cluster_id"].to_numpy(int)
 
-    # IMPORTANT: keep expansion itself also AB-dominant (same rationale as neighborhood)
+    # IMPORTANT: keep expansion itself also AB-dominant
     wL = float(_NEIGHBOR_WL)
     d2 = wL * (P[:, 0] - c0[0]) ** 2 + (P[:, 1] - c0[1]) ** 2 + (P[:, 2] - c0[2]) ** 2
 
@@ -486,6 +501,48 @@ def _print_dim_stats(df: pd.DataFrame, dim: str) -> None:
     print(f"  {dim:<12} min={vals.min():.3f}  mean={vals.mean():.3f}  max={vals.max():.3f}")
 
 
+def _restore_explain_cols(
+    base_df: pd.DataFrame,
+    scored_df: pd.DataFrame,
+    *,
+    explain_cols: tuple[str, ...] = _EXPLAIN_COLS,
+) -> pd.DataFrame:
+    """
+    Does:
+        Ensure returned scored df keeps explain feature columns (light_hsl, sat_hsl, Lab, etc.)
+        by merging them back from the pre-score inventory slice.
+    """
+    if scored_df is None or scored_df.empty:
+        return scored_df
+    if base_df is None or base_df.empty:
+        return scored_df
+
+    need = [c for c in explain_cols if c in base_df.columns and c not in scored_df.columns]
+    if not need:
+        return scored_df
+
+    # Prefer stable identifiers
+    key_candidates = [("product_id", "shade_id"), ("shade_id",), ("product_id",)]
+    keys = None
+    for kc in key_candidates:
+        if all(k in base_df.columns for k in kc) and all(k in scored_df.columns for k in kc):
+            keys = list(kc)
+            break
+
+    if keys is None:
+        # Last resort: try index join if indices match (rare)
+        if base_df.index.equals(scored_df.index):
+            out = scored_df.copy()
+            for c in need:
+                out[c] = base_df[c]
+            return out
+        return scored_df
+
+    feat = base_df[keys + need].drop_duplicates(subset=keys).copy()
+    out = scored_df.merge(feat, on=keys, how="left", suffixes=("", ""))
+    return out
+
+
 def recommend_from_text(
     text: str,
     *,
@@ -548,7 +605,7 @@ def recommend_from_text(
         tokens = [t.strip() for t in str(constraints_blob).split(";") if t.strip()]
         cons = tuple(_parse_constraint_token(t) for t in tokens)
 
-    # 3b) Plain-color neutral regularizer:
+    # 3b) Plain-color neutral regularizer
     injected_neutral = False
     if (not cons) and has_color and (not _has_effective_thresholds(ths)):
         neutral_tokens: list[str] = []
@@ -577,11 +634,7 @@ def recommend_from_text(
         if like_cluster_id not in base_clusters:
             base_clusters = [like_cluster_id] + base_clusters
 
-    # 5) Pool selection policy:
-    # - neutral-only => NEVER expand
-    # - brightness-only => NEVER expand (even if constraints exist)
-    # - hue_lock => expand only if too few feasible candidates within base family
-    # - no color mention => bounded feasibility-driven expansion
+    # 5) Pool selection policy
     candidate_cluster_ids_final = base_clusters
 
     if cons and (not is_neutral_only) and (not brightness_only):
@@ -679,20 +732,42 @@ def recommend_from_text(
         df["cluster_id"] = df["cluster_id"].astype(int)
         df = df[df["cluster_id"].isin([int(x) for x in base_clusters])].copy()
 
+    # DEBUG: detect missing constraint dims early (pre-score)
+    if debug and cons:
+        needed = sorted({str(c.dim) for c in cons})
+        missing = [d for d in needed if d not in df.columns]
+        if missing:
+            print("\n[WARN] Missing constraint dims in inventory slice:")
+            print(f"  missing={missing}")
+            print(f"  available_cols_sample={sorted(list(df.columns))[:40]}")
+
     # 7) Scoring
+    # IMPORTANT: neutral-only regularizer must not dominate ΔE.
+    lambda_constraints_eff = float(lambda_constraints)
+    if injected_neutral and is_neutral_only:
+        lambda_constraints_eff = min(lambda_constraints_eff, float(_NEUTRAL_LAMBDA_MAX))
+
+    if debug:
+        print("\n[Scoring weights]")
+        print(f"  lambda_constraints={float(lambda_constraints):.3f}  lambda_constraints_eff={lambda_constraints_eff:.3f}")
+        print(f"  lambda_preference={float(lambda_preference):.3f}")
+
     query = QuerySpec(like_cluster_id=like_cluster_id, constraints=cons)
     scored = score_shades(
         df,
         assets.prototypes,
         query,
-        lambda_constraints=float(lambda_constraints),
+        lambda_constraints=lambda_constraints_eff,
         lambda_preference=float(lambda_preference),
         calibration=assets.calibration,
         preference_weights=None,
     )
 
+    # Restore explain feature columns that score_shades may have dropped
+    scored = _restore_explain_cols(df, scored, explain_cols=tuple(_EXPLAIN_COLS))
+
     sort_col = "score_total" if "score_total" in scored.columns else "score"
-    top = scored.sort_values(sort_col, ascending=False).head(int(topk))
+    top = scored.sort_values(sort_col, ascending=False).head(int(topk)).copy()
 
     if debug:
         print("\n[Top-K dim distribution]")

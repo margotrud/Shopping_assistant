@@ -8,10 +8,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypedDi
 
 import numpy as np
 
-from Shopping_assistant.color.lexicon import ColorLexicon
 from Shopping_assistant.nlp.parsing.clauses import ClauseChunk
 from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_for_mentions
 from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.nlp.runtime.lexicon import ColorLexicon
+from Shopping_assistant.nlp.axes.predictor import predict_axis
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +323,8 @@ def _color_lexicon() -> Optional[ColorLexicon]:
         - If missing/unavailable, return None and keep CSS/XKCD-only behavior.
     """
     try:
-        return ColorLexicon.load()  # data/nlp/color_lexicon.json by default
+        from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
+        return load_default_lexicon()
     except Exception:
         return None
 
@@ -399,48 +401,218 @@ def _product_base_form(token: str) -> str:
 # Mention extraction (n-gram scan on normalized text)
 # ---------------------------------------------------------------------------
 
-def extract_mentions_free(doc_text: str, color_index: Dict[str, Dict[str, Any]]) -> List[Mention]:
-    toks = _norm(doc_text).split()
-    if not toks:
+def extract_mentions_free(
+    doc_text: str,
+    color_index: Dict[str, Dict[str, Any]],
+    doc: Optional[Any] = None,
+) -> List[Mention]:
+    """
+    Non-static mention extraction:
+    - Prefer spaCy Doc if provided (POS/stopwords gating).
+    - Reject non color-like spans (verbs, function words).
+    - If span contains axis-like adjectives (via predict_axis), resolve ONLY the head token.
+    """
+    if not doc_text:
         return []
+
+    # If no Doc provided, fallback to previous behavior (kept for backward compat).
+    if doc is None:
+        toks = _norm(doc_text).split()
+        if not toks:
+            return []
+
+        max_n = _max_ngram_from_index(color_index)
+        hits: List[Mention] = []
+        i = 0
+
+        while i < len(toks):
+            matched: Optional[Mention] = None
+            for n in range(min(max_n, len(toks) - i), 0, -1):
+                cand = " ".join(toks[i : i + n])
+
+                info = color_index.get(cand)
+                if not info:
+                    info = _lexicon_info_for_candidate(cand)
+
+                if info:
+                    matched = {
+                        "alias": cand,
+                        "name": str(info.get("name") or cand),
+                        "tok_start": i,
+                        "tok_len": n,
+                    }
+
+                    lab_h = _safe_float(info.get("lab_hue_deg"))
+                    if lab_h is not None:
+                        matched["lab_hue_deg"] = lab_h
+                    else:
+                        hue = _safe_float(info.get("hue_deg"))
+                        if hue is not None:
+                            matched["hue_deg"] = hue
+
+                    i += n
+                    break
+
+            if matched:
+                hits.append(matched)
+            else:
+                i += 1
+
+        seen: set[str] = set()
+        uniq: List[Mention] = []
+        for h in hits:
+            nm = str(h.get("name") or "")
+            if nm and nm not in seen:
+                uniq.append(h)
+                seen.add(nm)
+        return uniq
+
+    # -------------------------
+    # spaCy-driven extraction
+    # -------------------------
+    FUNCTIONAL_POS = {"VERB", "AUX", "DET", "ADP", "PRON", "PART", "SCONJ", "CCONJ", "PUNCT", "SPACE"}
+    COLORLIKE_POS = {"ADJ", "NOUN", "PROPN"}
+
+    # Build a normalized token list aligned to spaCy token indices.
+    # We match against world index keys (already normalized with spaces).
+    tok_norm: List[str] = []
+    for t in doc:
+        tok_norm.append(_norm(t.text))
 
     max_n = _max_ngram_from_index(color_index)
     hits: List[Mention] = []
     i = 0
 
-    while i < len(toks):
+    def _span_tokens(i0: int, n: int) -> List[Any]:
+        return [doc[j] for j in range(i0, min(len(doc), i0 + n))]
+
+    def _trim_left(ts: List[Any]) -> List[Any]:
+        # remove leading function words / stops (dynamic, no hard lists)
+        k = 0
+        while k < len(ts):
+            t = ts[k]
+            if (t.is_space or t.is_punct or t.is_stop or t.pos_ in {"DET", "ADP", "PRON", "PART"}):
+                k += 1
+                continue
+            break
+        return ts[k:] if k > 0 else ts
+
+    def _head_color_token(ts: List[Any]) -> Optional[Any]:
+        # rightmost content token is a robust head for "bright red", "dark berry", etc.
+        for t in reversed(ts):
+            if t.is_space or t.is_punct:
+                continue
+            if not t.is_alpha:
+                continue
+            return t
+        return None
+
+    def _span_is_eligible(ts: List[Any]) -> bool:
+        if not ts:
+            return False
+
+        # Reject if span contains verbs/aux (kills "want", "looking", etc.)
+        for t in ts:
+            if t.pos_ in {"VERB", "AUX"}:
+                return False
+
+        head = _head_color_token(ts)
+        if head is None:
+            return False
+        if head.is_stop:
+            return False
+        if head.pos_ in FUNCTIONAL_POS:
+            return False
+        if head.pos_ not in COLORLIKE_POS:
+            return False
+        return True
+
+    def _has_axis_like_prefix(ts: List[Any]) -> bool:
+        # Anything before head that looks like an axis label should be treated as constraint,
+        # so we resolve only the head color token.
+        head = _head_color_token(ts)
+        if head is None:
+            return False
+        for t in ts:
+            if t.i == head.i:
+                continue
+            if t.is_stop or not t.is_alpha:
+                continue
+            pred = predict_axis(str(t.lemma_ or t.text), debug=False)
+            if pred.axis is not None:
+                return True
+        return False
+
+    while i < len(doc):
+        # skip obvious non-starters
+        ti = doc[i]
+        if ti.is_space or ti.is_punct:
+            i += 1
+            continue
+
         matched: Optional[Mention] = None
-        for n in range(min(max_n, len(toks) - i), 0, -1):
-            cand = " ".join(toks[i : i + n])
 
-            info = color_index.get(cand)
-            if not info:
-                info = _lexicon_info_for_candidate(cand)
+        for n in range(min(max_n, len(doc) - i), 0, -1):
+            ts = _span_tokens(i, n)
+            ts = _trim_left(ts)
+            if not ts:
+                continue
+            if not _span_is_eligible(ts):
+                continue
 
-            if info:
+            # candidate string normalized like indexes
+            cand = _norm(" ".join(t.text for t in ts)).strip()
+            if not cand:
+                continue
+
+            # If span contains axis-like tokens, resolve only head color token.
+            if len(ts) >= 2 and _has_axis_like_prefix(ts):
+                head = _head_color_token(ts)
+                if head is None:
+                    continue
+                cand_head = _norm(head.text)
+                info = color_index.get(cand_head) or _lexicon_info_for_candidate(cand_head)
+                if not info:
+                    continue
+
+                matched = {
+                    "alias": cand_head,
+                    "name": str(info.get("name") or cand_head),
+                    "tok_start": int(head.i),
+                    "tok_len": 1,
+                }
+            else:
+                # Try exact in world index, else lexicon resolve
+                info = color_index.get(cand) or _lexicon_info_for_candidate(cand)
+                if not info:
+                    continue
+
                 matched = {
                     "alias": cand,
                     "name": str(info.get("name") or cand),
-                    "tok_start": i,
-                    "tok_len": n,
+                    "tok_start": int(ts[0].i),
+                    "tok_len": int(ts[-1].i - ts[0].i + 1),
                 }
 
-                lab_h = _safe_float(info.get("lab_hue_deg"))
-                if lab_h is not None:
-                    matched["lab_hue_deg"] = lab_h
-                else:
-                    hue = _safe_float(info.get("hue_deg"))
-                    if hue is not None:
-                        matched["hue_deg"] = hue
+            # attach hue if available
+            lab_h = _safe_float(info.get("lab_hue_deg")) if info else None
+            if lab_h is not None:
+                matched["lab_hue_deg"] = lab_h
+            else:
+                hue = _safe_float(info.get("hue_deg")) if info else None
+                if hue is not None:
+                    matched["hue_deg"] = hue
 
-                i += n
-                break
+            # advance pointer to end of matched span
+            i = matched["tok_start"] + matched["tok_len"]
+            break
 
         if matched:
             hits.append(matched)
         else:
             i += 1
 
+    # De-dup by name
     seen: set[str] = set()
     uniq: List[Mention] = []
     for h in hits:
