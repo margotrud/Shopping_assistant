@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
 
+from Shopping_assistant.nlp.axes.predictor import predict_axis
 from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
 from Shopping_assistant.nlp.parsing.clauses import ClauseSplitConfig, split_clauses
 from Shopping_assistant.nlp.parsing.constraints import extract_constraints_from_clause_text
@@ -27,11 +28,6 @@ from Shopping_assistant.nlp.schema import (
     Polarity,
     Span,
 )
-
-# Dynamic axis eligibility: do NOT statically allowlist words.
-# We reuse the same axis predictor logic to decide whether a token should remain eligible
-# for constraint extraction even if it was also extracted as a "color mention".
-from Shopping_assistant.nlp.axes.predictor import predict_axis
 
 __all__ = [
     "interpret_nlp",
@@ -112,7 +108,6 @@ def _constraint_sort_key(c: Constraint) -> tuple:
 
 
 def _normalize_model_name(model_name: str) -> str:
-    # Keep consistent with how your predictor expects model names.
     if "/" in (model_name or ""):
         return model_name
     return f"sentence-transformers/{model_name}"
@@ -152,7 +147,6 @@ def _blocked_lemmas_from_mentions(
         for tok in _TOKEN_SPLIT_RE.split((name or "").lower()):
             if not tok:
                 continue
-            # If token is axis-like (per predictor), keep it eligible for constraint extraction.
             if _is_axis_like_token(
                 tok,
                 model_name=axis_model,
@@ -162,6 +156,34 @@ def _blocked_lemmas_from_mentions(
                 continue
             blocked.add(tok)
     return blocked
+
+
+def _to_jsonable(x: Any) -> Any:
+    """
+    Does:
+        Convert dataclasses/slots/enums/tuples to JSON-serializable primitives for debug outputs.
+    """
+    from dataclasses import asdict
+    from enum import Enum
+
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+    if isinstance(x, Enum):
+        return x.value
+    if is_dataclass(x):
+        return {k: _to_jsonable(v) for k, v in asdict(x).items()}
+    if isinstance(x, dict):
+        return {str(k): _to_jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)):
+        return [_to_jsonable(v) for v in x]
+    if hasattr(x, "__slots__"):
+        out = {}
+        for k in getattr(x, "__slots__", []) or []:
+            if isinstance(k, str) and hasattr(x, k):
+                out[k] = _to_jsonable(getattr(x, k))
+        if out:
+            return out
+    return str(x)
 
 
 def interpret_nlp(
@@ -228,9 +250,6 @@ def interpret_nlp(
         clause_offset = _clause_global_offset(cl)
         doc = nlp(clause_text)
 
-        # -----------------------------
-        # Mentions (colors)
-        # -----------------------------
         mention_dicts = extract_mentions_free(clause_text, color_index, doc=doc)
         mention_names = [
             str(m.get("name") or "").strip()
@@ -240,9 +259,6 @@ def interpret_nlp(
         mention_names = [m for m in mention_names if m]
         mention_set = set(mention_names)
 
-        # IMPORTANT: blocked_lemmas must be dynamic.
-        # If the mention extractor mistakenly yields axis words (bright/neon/flashy/etc),
-        # we must NOT block them from constraint extraction.
         blocked_lemmas = _blocked_lemmas_from_mentions(
             mention_names,
             axis_model="all-MiniLM-L6-v2",
@@ -313,9 +329,6 @@ def interpret_nlp(
                     }
                 )
 
-        # -----------------------------
-        # Constraints
-        # -----------------------------
         cons = extract_constraints_from_clause_text(
             clause_text,
             clause_id=cl.clause_id,
@@ -381,9 +394,6 @@ def interpret_nlp(
                 ]
             )
 
-    # -----------------------------
-    # Conflicts + normalization + final stabilization (deterministic output order)
-    # -----------------------------
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
     constraints_final = normalize_constraints(constraints_final, strict=debug)
 
@@ -457,11 +467,11 @@ def interpret_preference_text(
     )
     return {
         "text": res.text,
-        "clauses": [c.__dict__ for c in res.clauses],
-        "mentions": [m.__dict__ for m in res.mentions],
-        "constraints": [c.__dict__ for c in res.constraints],
-        "diagnostics": res.diagnostics,
-        "trace": res.trace,
+        "clauses": [_to_jsonable(c) for c in res.clauses],
+        "mentions": [_to_jsonable(m) for m in res.mentions],
+        "constraints": [_to_jsonable(c) for c in res.constraints],
+        "diagnostics": _to_jsonable(res.diagnostics),
+        "trace": _to_jsonable(res.trace),
     }
 
 

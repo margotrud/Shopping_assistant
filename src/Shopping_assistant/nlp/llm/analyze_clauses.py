@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 import colorsys
+import os
 import re
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypedDict
 
 import numpy as np
 
+from Shopping_assistant.nlp.axes.predictor import predict_axis
 from Shopping_assistant.nlp.parsing.clauses import ClauseChunk
 from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_for_mentions
-from Shopping_assistant.utils.optional_deps import require
 from Shopping_assistant.nlp.runtime.lexicon import ColorLexicon
-from Shopping_assistant.nlp.axes.predictor import predict_axis
+from Shopping_assistant.utils.optional_deps import require
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +44,10 @@ class StyleIntent(TypedDict, total=False):
 class Mention(TypedDict, total=False):
     alias: str
     name: str
+    hex: str
+    lab_L: float
+    lab_a: float
+    lab_b: float
     hue_deg: float
     lab_hue_deg: float
     tok_start: int
@@ -50,40 +55,45 @@ class Mention(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
+# Debug
+# ---------------------------------------------------------------------------
+
+def _debug_enabled() -> bool:
+    return os.environ.get("SA_COLOR_DEBUG", "").strip() in {"1", "true", "True", "YES", "yes"}
+
+
+def _dbg(msg: str, **kv: Any) -> None:
+    if not _debug_enabled():
+        return
+    parts = [msg]
+    for k, v in kv.items():
+        try:
+            parts.append(f"{k}={v!r}")
+        except Exception:
+            parts.append(f"{k}=<unrepr>")
+    print("[COLORDBG]", " ".join(parts))
+
+
+# ---------------------------------------------------------------------------
 # Normalization helpers
 # ---------------------------------------------------------------------------
 
 def _norm(s: str) -> str:
-    """
-    Does:
-        Normalize a string into lowercase alnum tokens separated by single spaces.
-    """
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in s).split())
 
 
 def _token_freq_over_aliases(aliases: Iterable[str]) -> Dict[str, int]:
     freq: Dict[str, int] = {}
     for a in aliases:
-        toks = a.split()
-        for t in toks:
-            if not t:
-                continue
-            freq[t] = freq.get(t, 0) + 1
+        for t in a.split():
+            if t:
+                freq[t] = freq.get(t, 0) + 1
     return freq
 
 
-def _build_xkcd_single_token_allowset(
-    *,
-    css_aliases: set[str],
-    xkcd_aliases: set[str],
-) -> set[str]:
-    """
-    Does:
-        Build a dynamic allowlist for single-token XKCD aliases.
-    """
+def _build_xkcd_single_token_allowset(*, css_aliases: set[str], xkcd_aliases: set[str]) -> set[str]:
     xkcd_multi = {a for a in xkcd_aliases if " " in a}
     css_multi = {a for a in css_aliases if " " in a}
-
     freq = _token_freq_over_aliases(xkcd_multi | css_multi)
 
     vals = sorted(freq.values())
@@ -97,20 +107,18 @@ def _build_xkcd_single_token_allowset(
     for a in xkcd_aliases:
         if " " in a:
             continue
-        t = a
-        if not t or len(t) < 3:
+        if not a or len(a) < 3:
             continue
-        if t in css_aliases:
-            allow.add(t)
+        if a in css_aliases:
+            allow.add(a)
             continue
-        if freq.get(t, 0) >= thr:
-            allow.add(t)
-
+        if freq.get(a, 0) >= thr:
+            allow.add(a)
     return allow
 
 
 # ---------------------------------------------------------------------------
-# Hex -> hue helpers (dynamic, derived from inventories)
+# Hex -> hue / Lab helpers
 # ---------------------------------------------------------------------------
 
 def _hex_to_rgb01(hx: str) -> Optional[Tuple[float, float, float]]:
@@ -148,12 +156,10 @@ def _hex_to_lab(hx: str) -> Optional[Tuple[float, float, float]]:
     r, g, b = rgb01
     r, g, b = _srgb01_to_linear(r), _srgb01_to_linear(g), _srgb01_to_linear(b)
 
-    # sRGB D65
     X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
     Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
     Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
 
-    # D65 white
     Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
     x, y, z = X / Xn, Y / Yn, Z / Zn
 
@@ -175,7 +181,7 @@ def _lab_hue_deg_from_ab(a: float, b: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# World alias index (CSS + XKCD), dependency-driven
+# World alias index (CSS + XKCD)
 # ---------------------------------------------------------------------------
 
 def _iter_css_color_names() -> Iterable[str]:
@@ -197,10 +203,6 @@ def _iter_xkcd_color_items() -> Iterable[Tuple[str, str]]:
 
 
 def _norm_alias(s: str) -> str:
-    """
-    Does:
-        Normalize aliases (handles "xkcd:" prefix), keep alnum+space.
-    """
     s = s.lower().strip()
     if s.startswith("xkcd:"):
         s = s[5:]
@@ -219,13 +221,6 @@ def _norm_alias(s: str) -> str:
 
 @lru_cache(maxsize=2)
 def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str, Any]]:
-    """
-    Does:
-        Build a dynamic alias index from CSS/XKCD color inventories.
-
-    Returns:
-        Mapping alias -> {name, hex, hue_deg, lab_hue_deg, source, ...}
-    """
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color inventory")
     idx: Dict[str, Dict[str, Any]] = {}
 
@@ -244,14 +239,15 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
         info: Dict[str, Any] = {"name": alias, "source": "css"}
         if hx:
             info["hex"] = hx
-
             hue = _hex_to_hue_deg(hx)
             if hue is not None:
                 info["hue_deg"] = hue
-
             lab = _hex_to_lab(hx)
             if lab is not None:
-                _L, a, b = lab
+                L, a, b = lab
+                info["lab_L"] = float(L)
+                info["lab_a"] = float(a)
+                info["lab_b"] = float(b)
                 info["lab_hue_deg"] = _lab_hue_deg_from_ab(a, b)
 
         idx[alias] = info
@@ -275,9 +271,8 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
             if not alias:
                 continue
 
-            if " " not in alias:
-                if alias not in xkcd_single_allow:
-                    continue
+            if " " not in alias and alias not in xkcd_single_allow:
+                continue
 
             info2: Dict[str, Any] = {"name": alias, "hex": hx, "source": "xkcd"}
 
@@ -287,7 +282,10 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
 
             lab2 = _hex_to_lab(hx)
             if lab2 is not None:
-                _L2, a2, b2 = lab2
+                L2, a2, b2 = lab2
+                info2["lab_L"] = float(L2)
+                info2["lab_a"] = float(a2)
+                info2["lab_b"] = float(b2)
                 info2["lab_hue_deg"] = _lab_hue_deg_from_ab(a2, b2)
 
             idx[alias] = info2
@@ -309,51 +307,39 @@ def _safe_float(x: Any) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Extended lexicon (offline artifact) loader + resolver
+# Lexicon resolve (controlled semantic)
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def _color_lexicon() -> Optional[ColorLexicon]:
-    """
-    Does:
-        Load the offline-built extended color lexicon if available.
-
-    Notes:
-        - No CSV dependency.
-        - If missing/unavailable, return None and keep CSS/XKCD-only behavior.
-    """
     try:
         from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
         return load_default_lexicon()
-    except Exception:
+    except Exception as e:
+        _dbg("lexicon_load_failed", err=str(e))
         return None
 
 
-def _lexicon_info_for_candidate(cand: str) -> Optional[Dict[str, Any]]:
-    """
-    Does:
-        Resolve a candidate phrase via ColorLexicon and convert to world-index-like info.
-
-    Returns:
-        {name, hex, hue_deg?, lab_hue_deg?, source}
-    """
+def _lexicon_resolve(cand: str, *, allow_semantic: bool) -> Optional[Dict[str, Any]]:
     lex = _color_lexicon()
     if lex is None:
         return None
 
-    # Conservative: avoid spurious matches.
-    resolved = lex.resolve(cand, topk=1, fuzzy_cutoff=75.0, use_semantic=True)
+    resolved = lex.resolve(
+        cand,
+        topk=1,
+        fuzzy_cutoff=75.0,
+        use_semantic=bool(allow_semantic),
+    )
     if not resolved:
+        _dbg("lexicon_no_match", cand=cand, allow_semantic=allow_semantic)
         return None
 
     best = resolved[0]
     hx = best.hex
+    src = f"lexicon:{best.source}"
 
-    info: Dict[str, Any] = {
-        "name": best.name,
-        "hex": hx,
-        "source": f"lexicon:{best.source}",
-    }
+    info: Dict[str, Any] = {"name": best.name, "hex": hx, "source": src}
 
     hue = _hex_to_hue_deg(hx)
     if hue is not None:
@@ -361,20 +347,41 @@ def _lexicon_info_for_candidate(cand: str) -> Optional[Dict[str, Any]]:
 
     lab = _hex_to_lab(hx)
     if lab is not None:
-        _L, a, b = lab
+        L, a, b = lab
+        info["lab_L"] = float(L)
+        info["lab_a"] = float(a)
+        info["lab_b"] = float(b)
         info["lab_hue_deg"] = _lab_hue_deg_from_ab(a, b)
 
+    _dbg(
+        "lexicon_match",
+        cand=cand,
+        allow_semantic=allow_semantic,
+        best_alias=getattr(best, "alias", None),
+        best_name=best.name,
+        best_source=best.source,
+        best_score=best.score,
+    )
     return info
 
 
 # ---------------------------------------------------------------------------
-# spaCy STOP_WORDS (lazy)
+# spaCy
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def _stop_words_en() -> set[str]:
-    spacy = require("spacy", extra="spacy", purpose="STOP_WORDS for style extraction.")
+    spacy = require("spacy", extra="spacy", purpose="STOP_WORDS for mention/style extraction.")
     return set(spacy.lang.en.stop_words.STOP_WORDS)
+
+
+@lru_cache(maxsize=1)
+def _spacy_nlp_en():
+    spacy = require("spacy", extra="spacy", purpose="spaCy for mention extraction.")
+    try:
+        return spacy.load("en_core_web_sm")
+    except Exception:
+        return spacy.blank("en")
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +389,9 @@ def _stop_words_en() -> set[str]:
 # ---------------------------------------------------------------------------
 
 PRODUCT_BASES: set[str] = {"lipstick"}
+
+# Keep minimal (domain bootstrap only): allow "nude" via env-provided hex.
+NUDE_HEX = os.environ.get("SA_COLOR_NUDE_HEX", "#e6c2b3").strip().lower()
 
 
 def _product_base_form(token: str) -> str:
@@ -397,8 +407,17 @@ def _product_base_form(token: str) -> str:
     return t
 
 
+def _nude_info_if_applicable(cand: str) -> Optional[Dict[str, Any]]:
+    if _norm(cand) != "nude":
+        return None
+    hx = NUDE_HEX if NUDE_HEX.startswith("#") else f"#{NUDE_HEX}"
+    if not re.fullmatch(r"^#[0-9a-f]{6}$", hx):
+        hx = "#e6c2b3"
+    return {"name": "Nude", "hex": hx, "source": "hardcode:nude"}
+
+
 # ---------------------------------------------------------------------------
-# Mention extraction (n-gram scan on normalized text)
+# Mention extraction
 # ---------------------------------------------------------------------------
 
 def extract_mentions_free(
@@ -406,16 +425,12 @@ def extract_mentions_free(
     color_index: Dict[str, Dict[str, Any]],
     doc: Optional[Any] = None,
 ) -> List[Mention]:
-    """
-    Non-static mention extraction:
-    - Prefer spaCy Doc if provided (POS/stopwords gating).
-    - Reject non color-like spans (verbs, function words).
-    - If span contains axis-like adjectives (via predict_axis), resolve ONLY the head token.
-    """
     if not doc_text:
         return []
 
-    # If no Doc provided, fallback to previous behavior (kept for backward compat).
+    stop_words = _stop_words_en()
+
+    # Fallback (safe but conservative)
     if doc is None:
         toks = _norm(doc_text).split()
         if not toks:
@@ -428,30 +443,87 @@ def extract_mentions_free(
         while i < len(toks):
             matched: Optional[Mention] = None
             for n in range(min(max_n, len(toks) - i), 0, -1):
-                cand = " ".join(toks[i : i + n])
+                span = toks[i : i + n]
+                if not span:
+                    continue
 
-                info = color_index.get(cand)
-                if not info:
-                    info = _lexicon_info_for_candidate(cand)
+                if span[0] == "not" and len(span) >= 2:
+                    cand = span[-1]
+                    if cand in stop_words:
+                        continue
+                else:
+                    cand = " ".join(span)
+
+                head = cand.split()[-1]
+                if head in stop_words:
+                    continue
+
+                info = None
+                src = None
+                if " " not in cand:
+                    nude_info = _nude_info_if_applicable(head)
+                    if nude_info:
+                        info = nude_info
+                        src = "hardcode"
+
+                if _product_base_form(head) in PRODUCT_BASES:
+                    continue
+
+                if " " not in cand:
+                    pred0 = predict_axis(head, debug=False)
+                    if pred0.axis is not None:
+                        continue
+
+                if info is None and " " not in cand:
+                    if not (head.endswith("y") or head.endswith("ish") or head == "nude"):
+                        continue
+
+                if info is None:
+                    info = color_index.get(cand)
+                    src = "world_exact" if info else None
 
                 if info:
-                    matched = {
-                        "alias": cand,
-                        "name": str(info.get("name") or cand),
-                        "tok_start": i,
-                        "tok_len": n,
-                    }
+                    _dbg("world_exact_hit", cand=cand, name=info.get("name"), hx=info.get("hex"))
 
-                    lab_h = _safe_float(info.get("lab_hue_deg"))
-                    if lab_h is not None:
-                        matched["lab_hue_deg"] = lab_h
-                    else:
-                        hue = _safe_float(info.get("hue_deg"))
-                        if hue is not None:
-                            matched["hue_deg"] = hue
+                if not info:
+                    allow_sem = (" " in cand)
+                    _dbg("call_lexicon", cand=cand, allow_sem=allow_sem)
+                    info = _lexicon_resolve(cand, allow_semantic=allow_sem)
+                    src = "lexicon" if info else None
 
-                    i += n
-                    break
+                if not info:
+                    continue
+
+                matched = {
+                    "alias": cand if src != "hardcode" else head,
+                    "name": str(info.get("name") or cand),
+                    "tok_start": i,
+                    "tok_len": n if src != "hardcode" else 1,
+                }
+
+                hx = info.get("hex")
+                if isinstance(hx, str) and hx:
+                    matched["hex"] = hx
+
+                L = _safe_float(info.get("lab_L"))
+                a = _safe_float(info.get("lab_a"))
+                b = _safe_float(info.get("lab_b"))
+                if L is not None and a is not None and b is not None:
+                    matched["lab_L"] = L
+                    matched["lab_a"] = a
+                    matched["lab_b"] = b
+
+                lab_h = _safe_float(info.get("lab_hue_deg"))
+                if lab_h is not None:
+                    matched["lab_hue_deg"] = lab_h
+                else:
+                    hue = _safe_float(info.get("hue_deg"))
+                    if hue is not None:
+                        matched["hue_deg"] = hue
+
+                _dbg("fallback_match", span=span, cand=cand, src=src, name=matched["name"], hx=matched.get("hex"))
+                i += n
+                break
 
             if matched:
                 hits.append(matched)
@@ -467,38 +539,47 @@ def extract_mentions_free(
                 seen.add(nm)
         return uniq
 
-    # -------------------------
     # spaCy-driven extraction
-    # -------------------------
-    FUNCTIONAL_POS = {"VERB", "AUX", "DET", "ADP", "PRON", "PART", "SCONJ", "CCONJ", "PUNCT", "SPACE"}
+    FUNCTIONAL_POS = {
+        "VERB", "AUX", "DET", "ADP", "PRON", "PART", "SCONJ", "CCONJ", "PUNCT", "SPACE"
+    }
     COLORLIKE_POS = {"ADJ", "NOUN", "PROPN"}
-
-    # Build a normalized token list aligned to spaCy token indices.
-    # We match against world index keys (already normalized with spaces).
-    tok_norm: List[str] = []
-    for t in doc:
-        tok_norm.append(_norm(t.text))
 
     max_n = _max_ngram_from_index(color_index)
     hits: List[Mention] = []
     i = 0
 
+    seen_cand_counts: Dict[str, int] = {}
+
     def _span_tokens(i0: int, n: int) -> List[Any]:
         return [doc[j] for j in range(i0, min(len(doc), i0 + n))]
 
     def _trim_left(ts: List[Any]) -> List[Any]:
-        # remove leading function words / stops (dynamic, no hard lists)
         k = 0
         while k < len(ts):
             t = ts[k]
-            if (t.is_space or t.is_punct or t.is_stop or t.pos_ in {"DET", "ADP", "PRON", "PART"}):
+            if (
+                t.is_space
+                or t.is_punct
+                or t.is_stop
+                or t.pos_ in {"DET", "ADP", "PRON", "PART"}
+            ):
                 k += 1
                 continue
             break
         return ts[k:] if k > 0 else ts
 
+    def _trim_right(ts: List[Any]) -> List[Any]:
+        k = len(ts) - 1
+        while k >= 0:
+            t = ts[k]
+            if t.is_space or t.is_punct:
+                k -= 1
+                continue
+            break
+        return ts[: k + 1]
+
     def _head_color_token(ts: List[Any]) -> Optional[Any]:
-        # rightmost content token is a robust head for "bright red", "dark berry", etc.
         for t in reversed(ts):
             if t.is_space or t.is_punct:
                 continue
@@ -510,8 +591,6 @@ def extract_mentions_free(
     def _span_is_eligible(ts: List[Any]) -> bool:
         if not ts:
             return False
-
-        # Reject if span contains verbs/aux (kills "want", "looking", etc.)
         for t in ts:
             if t.pos_ in {"VERB", "AUX"}:
                 return False
@@ -528,8 +607,6 @@ def extract_mentions_free(
         return True
 
     def _has_axis_like_prefix(ts: List[Any]) -> bool:
-        # Anything before head that looks like an axis label should be treated as constraint,
-        # so we resolve only the head color token.
         head = _head_color_token(ts)
         if head is None:
             return False
@@ -543,8 +620,57 @@ def extract_mentions_free(
                 return True
         return False
 
+    def _finalize_match(
+        *,
+        alias: str,
+        info: Dict[str, Any],
+        tok_start: int,
+        tok_len: int,
+        src: str,
+        span_tokens: List[Any],
+        head_tok: Any,
+        allow_semantic: bool,
+    ) -> Mention:
+        matched: Mention = {
+            "alias": alias,
+            "name": str(info.get("name") or alias),
+            "tok_start": int(tok_start),
+            "tok_len": int(tok_len),
+        }
+
+        hx = info.get("hex")
+        if isinstance(hx, str) and hx:
+            matched["hex"] = hx
+
+        L = _safe_float(info.get("lab_L"))
+        a = _safe_float(info.get("lab_a"))
+        b = _safe_float(info.get("lab_b"))
+        if L is not None and a is not None and b is not None:
+            matched["lab_L"] = L
+            matched["lab_a"] = a
+            matched["lab_b"] = b
+
+        lab_h = _safe_float(info.get("lab_hue_deg"))
+        if lab_h is not None:
+            matched["lab_hue_deg"] = lab_h
+        else:
+            hue = _safe_float(info.get("hue_deg"))
+            if hue is not None:
+                matched["hue_deg"] = hue
+
+        _dbg(
+            "spacy_match",
+            cand=matched["alias"],
+            name=matched["name"],
+            hx=matched.get("hex"),
+            src=src,
+            span=[t.text for t in span_tokens],
+            head=getattr(head_tok, "text", None),
+            allow_semantic=allow_semantic,
+        )
+        return matched
+
     while i < len(doc):
-        # skip obvious non-starters
         ti = doc[i]
         if ti.is_space or ti.is_punct:
             i += 1
@@ -553,57 +679,224 @@ def extract_mentions_free(
         matched: Optional[Mention] = None
 
         for n in range(min(max_n, len(doc) - i), 0, -1):
-            ts = _span_tokens(i, n)
-            ts = _trim_left(ts)
+            ts0 = _span_tokens(i, n)
+            ts = _trim_left(ts0)
+            ts = _trim_right(ts)
             if not ts:
                 continue
             if not _span_is_eligible(ts):
                 continue
 
-            # candidate string normalized like indexes
-            cand = _norm(" ".join(t.text for t in ts)).strip()
+            head = _head_color_token(ts)
+            if head is None:
+                continue
+
+            if ts and _norm(ts[0].text) == "not":
+                cand = _norm(head.text)
+            else:
+                cand = _norm(" ".join(t.text for t in ts)).strip()
+
             if not cand:
                 continue
 
-            # If span contains axis-like tokens, resolve only head color token.
+            head_txt = _norm(head.text)
+
+            if _debug_enabled():
+                key = f"{cand}|head={head.text}|pos={head.pos_}|i={int(ts[0].i)}|n={n}"
+                seen_cand_counts[key] = seen_cand_counts.get(key, 0) + 1
+                _dbg(
+                    "try_span",
+                    cand=cand,
+                    head=head.text,
+                    head_lemma=getattr(head, "lemma_", None),
+                    head_pos=getattr(head, "pos_", None),
+                    head_is_stop=bool(getattr(head, "is_stop", False)),
+                    span=[t.text for t in ts],
+                    span_pos=[getattr(t, "pos_", None) for t in ts],
+                    span_i=[int(t.i) for t in ts],
+                    count=seen_cand_counts[key],
+                )
+
+            if head_txt in stop_words:
+                _dbg("skip_stopword_head", cand=cand, head=head_txt)
+                continue
+
+            if " " not in cand:
+                nude_info = _nude_info_if_applicable(head_txt)
+                if nude_info:
+                    matched = _finalize_match(
+                        alias="nude",
+                        info=nude_info,
+                        tok_start=int(head.i),
+                        tok_len=1,
+                        src="hardcode",
+                        span_tokens=ts,
+                        head_tok=head,
+                        allow_semantic=False,
+                    )
+                    i = matched["tok_start"] + matched["tok_len"]
+                    break
+
+            # PRODUCT HEAD HANDLING: accept amod + compound as mods (no per-word hardcode)
+            if _product_base_form(head_txt) in PRODUCT_BASES:
+                if _debug_enabled():
+                    _dbg(
+                        "product_head_debug",
+                        head=head.text,
+                        head_i=int(head.i),
+                        head_dep=getattr(head, "dep_", None),
+                        head_children=[(c.text, getattr(c, "dep_", None), getattr(c, "pos_", None), int(c.i)) for c in head.children],
+                        span=[(t.text, getattr(t, "dep_", None), getattr(t, "pos_", None), int(t.i)) for t in ts],
+                    )
+
+                mods = [
+                    t for t in ts
+                    if getattr(t, "dep_", "") in {"amod", "compound"}
+                    and t.is_alpha
+                    and not t.is_stop
+                ]
+                _dbg("product_mods_extracted", head=head.text, mods=[(m.text, getattr(m, "dep_", None), getattr(m, "pos_", None)) for m in mods])
+
+                if not mods:
+                    _dbg("skip_product_no_mods", cand=cand, head=head_txt, span=[t.text for t in ts])
+                    continue
+
+                found = None
+                for m in reversed(mods):
+                    m_cand = _norm(m.text)
+                    if not m_cand:
+                        continue
+
+                    nude_info = _nude_info_if_applicable(m_cand)
+                    if nude_info:
+                        found = (m, "nude", nude_info, "hardcode_mod")
+                        break
+
+                    predm = predict_axis(m_cand, debug=False)
+                    _dbg(
+                        "axis_pred_mod",
+                        cand=m_cand,
+                        axis=getattr(predm, "axis", None),
+                        score=getattr(predm, "score", None),
+                        source=getattr(predm, "source", None),
+                    )
+                    if predm.axis is not None:
+                        _dbg("skip_axis_single", cand=m_cand, head=m_cand, axis=predm.axis)
+                        continue
+
+                    info_m = color_index.get(m_cand)
+                    src_m = "world_mod" if info_m else None
+                    if info_m:
+                        _dbg("world_exact_hit_mod", cand=m_cand, name=info_m.get("name"), hx=info_m.get("hex"))
+
+                    if not info_m:
+                        _dbg("call_lexicon", cand=m_cand, allow_sem=False)
+                        info_m = _lexicon_resolve(m_cand, allow_semantic=False)
+                        src_m = "lexicon_mod" if info_m else None
+
+                    if info_m:
+                        found = (m, m_cand, info_m, src_m or "mod")
+                        break
+
+                if not found:
+                    _dbg("skip_product_no_color_mod", cand=cand, head=head_txt, mods=[m.text for m in mods])
+                    continue
+
+                m_tok, m_cand, info, src = found
+                matched = _finalize_match(
+                    alias=m_cand,
+                    info=info,
+                    tok_start=int(m_tok.i),
+                    tok_len=1,
+                    src=src,
+                    span_tokens=ts,
+                    head_tok=head,
+                    allow_semantic=False,
+                )
+                i = matched["tok_start"] + matched["tok_len"]
+                break
+
+            # ------------------------------------------------------------
+            # SINGLE TOKEN GATING (NON-HARDCODED):
+            # axis filter MUST run BEFORE accepting world_exact singletons
+            # ------------------------------------------------------------
+            info = None
+            src = None
+
+            if " " not in cand:
+                pred0 = predict_axis(head_txt, debug=False)
+                _dbg(
+                    "axis_pred_single",
+                    cand=cand,
+                    head=head_txt,
+                    pos=getattr(head, "pos_", None),
+                    axis=getattr(pred0, "axis", None),
+                    score=getattr(pred0, "score", None),
+                    source=getattr(pred0, "source", None),
+                )
+                if pred0.axis is not None:
+                    _dbg("skip_axis_single", cand=cand, head=head_txt, axis=pred0.axis)
+                    continue
+
+            # world exact (single or multi) AFTER axis filter
+            info = color_index.get(cand)
+            src = "world_exact" if info else None
+            if info:
+                _dbg("world_exact_hit", cand=cand, name=info.get("name"), hx=info.get("hex"))
+
+            # generic ADJ/ADV guard only when NOT found in world exact
+            if not info and " " not in cand:
+                if head.pos_ in {"ADJ", "ADV"} and not (cand.endswith("y") or cand.endswith("ish")):
+                    _dbg("skip_generic_adj_single", cand=cand, head=head.text, pos=head.pos_)
+                    continue
+
+            if not info:
+                allow_sem = (" " in cand)
+                _dbg("call_lexicon", cand=cand, allow_sem=allow_sem)
+                info = _lexicon_resolve(cand, allow_semantic=allow_sem)
+                src = "lexicon" if info else None
+
+            if not info:
+                continue
+
             if len(ts) >= 2 and _has_axis_like_prefix(ts):
-                head = _head_color_token(ts)
-                if head is None:
-                    continue
                 cand_head = _norm(head.text)
-                info = color_index.get(cand_head) or _lexicon_info_for_candidate(cand_head)
-                if not info:
+                info2 = color_index.get(cand_head)
+                src2 = "world_head" if info2 else None
+                if info2:
+                    _dbg("world_exact_hit_head", cand=cand_head, name=info2.get("name"), hx=info2.get("hex"))
+
+                if not info2:
+                    _dbg("call_lexicon", cand=cand_head, allow_sem=False)
+                    info2 = _lexicon_resolve(cand_head, allow_semantic=False)
+                    src2 = "lexicon_head" if info2 else None
+                if not info2:
                     continue
 
-                matched = {
-                    "alias": cand_head,
-                    "name": str(info.get("name") or cand_head),
-                    "tok_start": int(head.i),
-                    "tok_len": 1,
-                }
+                info = info2
+                src = src2 or "head"
+                matched = _finalize_match(
+                    alias=cand_head,
+                    info=info,
+                    tok_start=int(head.i),
+                    tok_len=1,
+                    src=src,
+                    span_tokens=ts,
+                    head_tok=head,
+                    allow_semantic=False,
+                )
             else:
-                # Try exact in world index, else lexicon resolve
-                info = color_index.get(cand) or _lexicon_info_for_candidate(cand)
-                if not info:
-                    continue
+                matched = _finalize_match(
+                    alias=cand,
+                    info=info,
+                    tok_start=int(ts[0].i),
+                    tok_len=int(ts[-1].i - ts[0].i + 1),
+                    src=src or "unk",
+                    span_tokens=ts,
+                    head_tok=head,
+                    allow_semantic=(" " in cand),
+                )
 
-                matched = {
-                    "alias": cand,
-                    "name": str(info.get("name") or cand),
-                    "tok_start": int(ts[0].i),
-                    "tok_len": int(ts[-1].i - ts[0].i + 1),
-                }
-
-            # attach hue if available
-            lab_h = _safe_float(info.get("lab_hue_deg")) if info else None
-            if lab_h is not None:
-                matched["lab_hue_deg"] = lab_h
-            else:
-                hue = _safe_float(info.get("hue_deg")) if info else None
-                if hue is not None:
-                    matched["hue_deg"] = hue
-
-            # advance pointer to end of matched span
             i = matched["tok_start"] + matched["tok_len"]
             break
 
@@ -612,7 +905,6 @@ def extract_mentions_free(
         else:
             i += 1
 
-    # De-dup by name
     seen: set[str] = set()
     uniq: List[Mention] = []
     for h in hits:
@@ -620,17 +912,19 @@ def extract_mentions_free(
         if nm and nm not in seen:
             uniq.append(h)
             seen.add(nm)
+
+    if _debug_enabled() and seen_cand_counts:
+        top = sorted(seen_cand_counts.items(), key=lambda kv: -kv[1])[:30]
+        _dbg("summary_top_attempts", top=top)
+
     return uniq
 
 
 # ---------------------------------------------------------------------------
-# Style extraction (token frequency, stopwords filtered)
+# Style extraction (unchanged)
 # ---------------------------------------------------------------------------
 
-def _extract_style_intents_from_chunks(
-    chunks: List[ClauseChunk],
-    color_index: Dict[str, Dict[str, Any]],
-) -> List[StyleIntent]:
+def _extract_style_intents_from_chunks(chunks: List[ClauseChunk], color_index: Dict[str, Dict[str, Any]]) -> List[StyleIntent]:
     stop_words = _stop_words_en()
     color_tokens = {tok for alias in color_index for tok in alias.split()}
     counts: Dict[str, int] = {}
@@ -653,10 +947,7 @@ def _extract_style_intents_from_chunks(
         return []
 
     mx = max(counts.values())
-    return [
-        StyleIntent(label=k, strength=v / mx, polarity="LIKE", source="GLOBAL")
-        for k, v in counts.items()
-    ]
+    return [StyleIntent(label=k, strength=v / mx, polarity="LIKE", source="GLOBAL") for k, v in counts.items()]
 
 
 def _extract_elliptical_style_intents(chunks: List[ClauseChunk]) -> List[StyleIntent]:
@@ -682,10 +973,7 @@ def _extract_elliptical_style_intents(chunks: List[ClauseChunk]) -> List[StyleIn
         return []
 
     mx = max(counts.values())
-    return [
-        StyleIntent(label=k, strength=v / mx, polarity="AVOID", source="ELLIPTICAL_NEG")
-        for k, v in counts.items()
-    ]
+    return [StyleIntent(label=k, strength=v / mx, polarity="AVOID", source="ELLIPTICAL_NEG") for k, v in counts.items()]
 
 
 def _extract_elliptical_descriptor_labels(chunks: List[ClauseChunk]) -> Dict[str, Any]:
@@ -710,10 +998,6 @@ def _extract_elliptical_descriptor_labels(chunks: List[ClauseChunk]) -> Dict[str
     return {} if not uniq else {"RAW_LABELS": uniq}
 
 
-# ---------------------------------------------------------------------------
-# Elliptical segmentation helpers (kept, used by other modules historically)
-# ---------------------------------------------------------------------------
-
 _NOT_START_RE = re.compile(
     r"(?:(?P<sep>[,;:\(\)\[\]\-–—])\s*|\bbut\s+)\bnot\b\s+",
     flags=re.IGNORECASE,
@@ -728,10 +1012,6 @@ def _find_elliptical_split(text: str) -> Optional[int]:
     return None if not inner else m.start() + inner.start()
 
 
-# ---------------------------------------------------------------------------
-# Main API
-# ---------------------------------------------------------------------------
-
 def analyze_clauses_with_llm(
     chunks: List[ClauseChunk],
     color_index: Dict[str, Dict[str, Any]],
@@ -744,11 +1024,16 @@ def analyze_clauses_with_llm(
     if llm_polarity_fn is None:
         raise RuntimeError("analyze_clauses_with_llm requires llm_polarity_fn.")
 
+    nlp = _spacy_nlp_en()
+    if debug_mentions:
+        os.environ["SA_COLOR_DEBUG"] = "1"
+
     likes: List[LikeItem] = []
     dislikes: List[DislikeItem] = []
 
     for ch in chunks:
-        mentions = extract_mentions_free(ch["text"], color_index)
+        doc = nlp(ch["text"])
+        mentions = extract_mentions_free(ch["text"], color_index, doc=doc)
         if not mentions:
             continue
 
@@ -762,17 +1047,20 @@ def analyze_clauses_with_llm(
             nm = m.get("name")
             if not nm:
                 continue
-            # Keep backward compat: emit hue_deg if present (prefer lab_hue_deg).
             hue = m.get("lab_hue_deg", m.get("hue_deg"))
             if pols.get(nm) == "LIKE":
                 it: LikeItem = {"family": nm}
                 if hue is not None:
                     it["hue_deg"] = float(hue)
+                if m.get("alias"):
+                    it["alias"] = str(m["alias"])
                 likes.append(it)
             elif pols.get(nm) == "DISLIKE":
                 it2: DislikeItem = {"family": nm}
                 if hue is not None:
                     it2["hue_deg"] = float(hue)
+                if m.get("alias"):
+                    it2["alias"] = str(m["alias"])
                 dislikes.append(it2)
 
     out: Dict[str, Any] = {"LIKES": likes, "DISLIKES": dislikes}
@@ -787,6 +1075,7 @@ def analyze_clauses_with_llm(
     if desc:
         out["CONSTRAINTS"] = desc
 
+    _ = infer_clause_sentiment_fn
     return out
 
 
@@ -798,4 +1087,5 @@ __all__ = [
     "build_world_alias_index",
     "extract_mentions_free",
     "analyze_clauses_with_llm",
+    "_spacy_nlp_en",
 ]

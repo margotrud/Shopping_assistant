@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -9,36 +10,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
+from Shopping_assistant.utils.optional_deps import require  # NEW (dynamic stopwords, not hardcoded denylist)
+
 SPACE_RE = re.compile(r"\s+")
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-
-
-# Safety: runtime deny too (defense in depth)
-DENY_KEYS: set[str] = {
-    "lipstick",
-    "lip stick",
-    "lip",
-    "lips",
-    "gloss",
-    "lipgloss",
-    "makeup",
-    "cosmetic",
-    "cosmetics",
-    "foundation",
-    "concealer",
-    "blush",
-    "mascara",
-    "eyeliner",
-    "palette",
-    "paint",
-    "ink",
-    "dye",
-    "color",
-    "colour",
-}
-
-# Back-compat alias used in a few internal snippets (keep both names)
-DENY_TOKENS = DENY_KEYS
 
 
 def _norm_text(s: str) -> str:
@@ -62,6 +39,15 @@ def _norm_hex(x: str) -> Optional[str]:
     if HEX_RE.match(x):
         return x.lower()
     return None
+
+
+@lru_cache(maxsize=1)
+def _stop_words_en() -> set[str]:
+    """
+    Dynamic guardrail: rely on spaCy STOP_WORDS instead of a hardcoded denylist.
+    """
+    spacy = require("spacy", extra="spacy", purpose="STOP_WORDS for color lexicon guardrails.")
+    return set(spacy.lang.en.stop_words.STOP_WORDS)
 
 
 def _token_variants(t: str) -> List[str]:
@@ -113,8 +99,6 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
     existing = set(idx.keys())
 
     for k in list(existing):
-        if k in DENY_KEYS:
-            continue
         info = idx.get(k)
         if not info:
             continue
@@ -123,8 +107,6 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
             if v == k:
                 continue
             if v in existing:
-                continue
-            if v in DENY_KEYS:
                 continue
 
             # hard safety: never materialize y-stripped base (don't create new base from "...y")
@@ -170,6 +152,82 @@ def _fuzzy_ratio(a: str, b: str) -> float:
     return 100.0 * SequenceMatcher(None, a, b).ratio()
 
 
+# -----------------------------
+# Semantic resolution helpers
+# -----------------------------
+def _project_root() -> Path:
+    # pythonProject/src/Shopping_assistant/nlp/runtime/lexicon.py -> pythonProject
+    return Path(__file__).resolve().parents[4]
+
+
+def _lexicon_cache_dir() -> Path:
+    return _project_root() / "data" / "cache" / "color_lexicon"
+
+
+def _safe_model_id(model_name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "__", model_name.strip())
+
+
+def _default_semantic_model() -> str:
+    return os.environ.get(
+        "SA_COLOR_SEMANTIC_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+
+@lru_cache(maxsize=2)
+def _st_model(model_name: str):
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+    except Exception as e:
+        raise RuntimeError(
+            "Semantic resolution requires sentence-transformers. "
+            "Install: pip install sentence-transformers"
+        ) from e
+    return SentenceTransformer(model_name)
+
+
+def _load_or_build_key_embeddings(keys: List[str], model_name: str) -> np.ndarray:
+    cache_dir = _lexicon_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    p = cache_dir / f"lexicon_emb__{_safe_model_id(model_name)}.npz"
+    if p.exists():
+        data = np.load(p, allow_pickle=True)
+        cached_keys = data["keys"].tolist()
+        if cached_keys == keys:
+            return data["emb"].astype(np.float32)
+
+    model = _st_model(model_name)
+    emb = model.encode(keys, normalize_embeddings=True, show_progress_bar=False)
+    emb = np.asarray(emb, dtype=np.float32)
+
+    np.savez_compressed(p, keys=np.asarray(keys, dtype=object), emb=emb)
+    return emb
+
+
+def _semantic_topk(
+    query: str,
+    keys: List[str],
+    key_emb: np.ndarray,
+    model_name: str,
+    topk: int,
+) -> List[tuple[str, float]]:
+    model = _st_model(model_name)
+    q_emb = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
+    q_emb = np.asarray(q_emb, dtype=np.float32)[0]
+
+    sims = key_emb @ q_emb  # cosine (embeddings are normalized)
+    k = max(1, int(topk))
+
+    if k >= len(keys):
+        idxs = np.argsort(-sims)
+    else:
+        idxs = np.argpartition(-sims, kth=k - 1)[:k]
+        idxs = idxs[np.argsort(-sims[idxs])]
+
+    return [(keys[i], float(sims[i])) for i in idxs]
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedColor:
     alias: str
@@ -212,7 +270,7 @@ class ColorLexicon:
                 continue
 
             kk = _norm_key(k)
-            if not kk or kk in DENY_KEYS:
+            if not kk:
                 continue
 
             hx = _norm_hex(str(v.get("hex") or ""))
@@ -243,22 +301,35 @@ class ColorLexicon:
           List[ResolvedColor] with attribute access (.hex, .name, ...).
 
         Notes:
-          - use_semantic is accepted for compatibility but ignored here.
           - fuzzy matching uses SequenceMatcher as a cheap runtime fallback.
+          - semantic fallback (sentence-transformers) is optional and cached.
+          - semantic is guarded to avoid resolving constraints / multi-token phrases.
         """
-        _ = use_semantic  # API compat
+        use_sem = bool(use_semantic)
 
         q = _norm_key(query)
-        if not q or q in DENY_KEYS:
+        if not q:
             return []
 
-        k_best = q
-        info = self.raw_index.get(k_best)
+        # Dynamic guardrail: reject stopwords (prevents sure->surf, etc.)
+        if q in _stop_words_en():
+            return []
+
+        # Dynamic guardrail: reject axis-like tokens (prevents bright->bright red, etc.)
+        try:
+            from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
+            pred = predict_axis(q, debug=False)
+            if getattr(pred, "axis", None) is not None:
+                return []
+        except Exception:
+            pass
+
+        info = self.raw_index.get(q)
         if info:
             return [
                 ResolvedColor(
-                    alias=k_best,
-                    name=str(info.get("name", k_best)),
+                    alias=q,
+                    name=str(info.get("name", q)),
                     hex=str(info.get("hex")),
                     source=str(info.get("source", "")),
                     score=100.0,
@@ -281,28 +352,97 @@ class ColorLexicon:
                         )
                     ][: max(1, int(topk))]
 
-        # fuzzy fallback (top-1)
-        best_k: Optional[str] = None
-        best_s = 0.0
-        for k in self.raw_index.keys():
-            if " " not in q and abs(len(k) - len(q)) > 6:
-                continue
-            s = _fuzzy_ratio(q, k)
-            if s > best_s:
-                best_s = s
-                best_k = k
+        # -----------------------------
+        # Fuzzy fallback (guarded)
+        # -----------------------------
+        single = (" " not in q)
 
-        if best_k is not None and best_s >= float(fuzzy_cutoff):
-            info3 = self.raw_index[best_k]
-            return [
-                ResolvedColor(
-                    alias=best_k,
-                    name=str(info3.get("name", best_k)),
-                    hex=str(info3.get("hex")),
-                    source=str(info3.get("source", "")),
-                    score=float(best_s),
-                )
-            ][: max(1, int(topk))]
+        # 1) disable fuzzy for short single tokens (avoids sure->surf, loud->cloud, lip->lilac)
+        min_len = int(os.environ.get("SA_COLOR_FUZZY_SINGLE_MIN_LEN", "6"))
+        use_fuzzy = not (single and len(q) < min_len)
+
+        # 2) stronger cutoff for single-token fuzzy
+        cutoff = float(fuzzy_cutoff)
+        if single:
+            cutoff = float(os.environ.get("SA_COLOR_FUZZY_CUTOFF_SINGLE", "92.0"))
+
+        if use_fuzzy:
+            best_k: Optional[str] = None
+            best_s = 0.0
+
+            for k in self.raw_index.keys():
+                # Never match single-token -> multi-token via fuzzy (bright->bright red)
+                if single and " " in k:
+                    continue
+
+                if single and abs(len(k) - len(q)) > 6:
+                    continue
+
+                s = _fuzzy_ratio(q, k)
+                if s > best_s:
+                    best_s = s
+                    best_k = k
+
+            if best_k is not None and best_s >= cutoff:
+                info3 = self.raw_index[best_k]
+                return [
+                    ResolvedColor(
+                        alias=best_k,
+                        name=str(info3.get("name", best_k)),
+                        hex=str(info3.get("hex")),
+                        source=str(info3.get("source", "")),
+                        score=float(best_s),
+                    )
+                ][: max(1, int(topk))]
+
+        # semantic fallback (keep existing guardrails; still dynamic)
+        if use_sem:
+            # 1) Never semantic-resolve multi-token phrases (constraints, style, negations, etc.)
+            if " " in q:
+                return []
+
+            # 2) Never semantic-resolve tokens that look like axis labels
+            try:
+                from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
+                pred = predict_axis(q, debug=False)
+                if getattr(pred, "axis", None) is not None:
+                    return []
+            except Exception:
+                pass
+
+            model_name = _default_semantic_model()
+            keys = list(self.raw_index.keys())
+            if keys:
+                key_emb = _load_or_build_key_embeddings(keys, model_name)
+                cand = _semantic_topk(q, keys, key_emb, model_name, topk=max(1, int(topk)))
+                if not cand:
+                    return []
+
+                # Require strong top-1 similarity to accept semantic resolution
+                top1_min = float(os.environ.get("SA_COLOR_SEMANTIC_TOP1_MIN", "0.62"))
+                _top1_k, top1_sim = cand[0]
+                if top1_sim < top1_min:
+                    return []
+
+                sem_cutoff = float(os.environ.get("SA_COLOR_SEMANTIC_CUTOFF", "0.55"))
+
+                out: List[ResolvedColor] = []
+                for k_sem, sim in cand:
+                    if sim < sem_cutoff:
+                        continue
+                    info4 = self.raw_index.get(k_sem)
+                    if not info4:
+                        continue
+                    out.append(
+                        ResolvedColor(
+                            alias=k_sem,
+                            name=str(info4.get("name", k_sem)),
+                            hex=str(info4.get("hex")),
+                            source=str(info4.get("source", "")) + ":semantic",
+                            score=100.0 * sim,
+                        )
+                    )
+                return out[: max(1, int(topk))]
 
         return []
 
@@ -396,18 +536,5 @@ class ColorLexicon:
         return uniq
 
 
-@lru_cache(maxsize=1)
 def load_default_lexicon() -> ColorLexicon:
-    lex = ColorLexicon.load()
-
-    # Nude: add a single-word business alias (no multiword static combos)
-    if "nude" not in lex.raw_index:
-        for base_key in ("beige", "tan"):
-            if base_key in lex.raw_index:
-                base = dict(lex.raw_index[base_key])  # clone
-                base["name"] = "Nude"
-                base["source"] = f'{base.get("source","")}:alias:nude'
-                lex.raw_index["nude"] = base
-                break
-
-    return lex
+    return ColorLexicon.load()
