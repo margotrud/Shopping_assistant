@@ -1,52 +1,51 @@
 # =====================================================
 # Project data
-# - Keep minimal, required demo assets under version control
-# - Ignore generated outputs and large local datasets
+# - Ignore all local datasets and generated artifacts
+# - Keep only code and lightweight configs under version control
 # =====================================================
 
-# Generated outputs
-data/reports/
-data/tmp/
-data/cache/
-data/**/__pycache__/
+# Ignore all local data by default
+/data/
 
-# Large exports (defensive)
-data/**/*.parquet
-data/**/*.feather
-data/**/*.arrow
-data/**/*.sqlite
-data/**/*.db
+# Optional extra local data locations
+Scripts/tools/data/
+**/_tmp_*/
 
-# If you keep a full dataset locally, ignore it explicitly by name
-# (keep a small sample versioned instead)
-data/inventory_full*/
-data/**/inventory_full*.csv
-data/**/inventory_full*.json
+# If needed, ignore images / json ONLY inside data
+data/**/*.png
+data/**/*.json
 
 
 # =====================================================
 # Build artifacts / opaque blobs (NOT for version control)
 # =====================================================
+
 data/bin/
 data/**/_chip_cache/
 data/**/*.bin
 
+
 # =====================================================
 # Generated scoring outputs (NOT for version control)
 # =====================================================
+
 data/scored_cluster_*.csv
 data/**/scored_cluster_*.csv
 data/scores/
 
+
+# =====================================================
+# Local experiments / scratch files
+# =====================================================
+
 small_test.py
 src/Shopping_assistant/nlp/models/
 
-data/Sephora_lipsticks_raw_items*.csv
 
-.idea/
-.venv/
+# =====================================================
+# Python / build
+# =====================================================
 
-# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -56,10 +55,18 @@ __pycache__/
 dist/
 build/
 
+
+# =====================================================
 # Pytest
+# =====================================================
+
 .pytest_cache/
 
-# IDE
+
+# =====================================================
+# IDE / environment
+# =====================================================
+
 .idea/
 .vscode/
-
+.venv/
