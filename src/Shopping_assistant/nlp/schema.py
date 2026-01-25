@@ -90,6 +90,10 @@ class Mention:
     clause_id: int = 0
     meta: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # canonical is a logical key (tests, filtering, dedupe). Normalize deterministically.
+        object.__setattr__(self, "canonical", (self.canonical or "").strip().lower())
+
 
 @dataclass(frozen=True, slots=True)
 class Constraint:

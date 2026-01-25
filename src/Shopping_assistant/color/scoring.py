@@ -40,35 +40,6 @@ def _default_enriched_for_scripts_only() -> Path:
     )
 
 
-def _default_prototypes_for_scripts_only() -> Path:
-    """
-    Canonical prototypes for the project (hierarchical clustering).
-    """
-    root = _project_root_for_scripts_only()
-    p = root / "data" / "enriched_data" / "color_prototypes_hier.csv"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"Missing prototypes file: {p}\n"
-            "Run: python -m Shopping_assistant.color.cluster_colors_hierarchical"
-        )
-    return p
-
-
-def _default_assignments_for_scripts_only() -> Path:
-    """
-    Canonical assignments for the project (hierarchical clustering).
-    """
-    root = _project_root_for_scripts_only()
-    p = root / "data" / "enriched_data" / "color_cluster_assignments_hier.csv"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"Missing assignments file: {p}\n"
-            "Run: python -m Shopping_assistant.color.cluster_colors_hierarchical"
-        )
-    return p
-
-
-
 def _default_outdir_for_scripts_only() -> Path:
     return _project_root_for_scripts_only() / "data" / "scores"
 
@@ -154,15 +125,16 @@ _ALLOWED_OPS = {"<=", ">="}
 class Constraint:
     dim: str
     op: str
-    level: str | None = None         # low|medium|high|very_high
-    cutpoint: float | None = None    # numeric threshold (preferred when provided)
+    level: str | None = None  # low|medium|high|very_high
+    cutpoint: float | None = None  # numeric threshold (preferred when provided)
     weight: float = 1.0
 
 
 @dataclass(frozen=True)
 class QuerySpec:
-    like_cluster_id: int
     constraints: Tuple[Constraint, ...] = ()
+    # anchor used when prototypes are not provided (or to override prototype center)
+    anchor_lab: Optional[Tuple[float, float, float]] = None
 
 
 # --- NLP -> scoring constraint adapter ---------------------------------
@@ -190,17 +162,16 @@ def _nlp_strength_to_level(direction: str, strength: str) -> str:
     Output: 'low'|'medium'|'high'|'very_high'
 
     FIX:
-      The previous mapping for direction=='lower' was inverted and produced nonsensical cutpoints.
-      For "lower", stronger intent must push the threshold LOWER (i.e., level 'low'), not 'medium/high/very_high'.
+      For "lower", stronger intent must push the threshold LOWER (level 'low').
     """
     strength = str(strength)
     direction = str(direction)
 
     if direction == "lower":
-        # "lower X" means we want <= threshold. Strong => low, med => medium, weak => high.
+        # "lower X" => <= threshold. strong => low, med => medium, weak => high.
         return {"strong": "low", "med": "medium", "weak": "high"}.get(strength, "medium")
 
-    # "raise X" means we want >= threshold. Strong => high, med => medium, weak => low.
+    # "raise X" => >= threshold. strong => high, med => medium, weak => low.
     return {"strong": "high", "med": "medium", "weak": "low"}.get(strength, "medium")
 
 
@@ -218,26 +189,37 @@ def constraints_from_nlp(
 ) -> Tuple["Constraint", ...]:
     """
     Does:
-        Convert NLP constraints (axis/direction/strength) into scoring constraints (dim/op/level/weight).
-        soft_weight downweights non-STRONG constraints globally (SOFT vs HARD).
+        Convert NLP constraints (axis/direction/strength/meta) into scoring constraints (dim/op/level/weight).
+        If meta['axis_query'] exists and is a valid scoring dim, it overrides the default axis->dim mapping.
     """
     out: List[Constraint] = []
     for c in nlp_constraints:
         axis = getattr(getattr(c, "axis", None), "value", None)
         direction = getattr(getattr(c, "direction", None), "value", None)
         strength = getattr(getattr(c, "strength", None), "value", None)
+        meta = getattr(c, "meta", None) or {}
+
         if not axis or not direction or not strength:
             continue
 
-        dim = _nlp_axis_to_dim(str(axis))
-        if dim is None:
-            continue
+        # Override dim via meta["axis_query"] when present
+        dim_override = None
+        if isinstance(meta, dict):
+            dim_override = meta.get("axis_query")
+
+        if isinstance(dim_override, str) and dim_override in _ALLOWED_DIMS:
+            dim = dim_override
+        else:
+            dim = _nlp_axis_to_dim(str(axis))
+            if dim is None:
+                continue
 
         op = "<=" if str(direction) == "lower" else ">="
         level = _nlp_strength_to_level(str(direction), str(strength))
         weight = _nlp_strength_to_weight(str(strength), soft_weight=float(soft_weight))
 
-        out.append(Constraint(dim=dim, op=op, level=level, cutpoint=None, weight=weight))
+        out.append(Constraint(dim=str(dim), op=str(op), level=level, cutpoint=None, weight=weight))
+
     return tuple(out)
 
 
@@ -257,6 +239,10 @@ def _split_constraints_blob(constraints: str) -> List[str]:
 def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[str]]:
     """
     Parse a combined constraints blob that may include a MIX block.
+
+    NOTE (no-clusters):
+      MIX is still supported as an "anchor mixer" when prototypes exist.
+      If prototypes are absent, MIX requires anchor_lab_override at call sites (not provided here).
     """
     tokens = _split_constraints_blob(constraints)
     if not tokens:
@@ -319,29 +305,6 @@ def _parse_mix_and_constraints(constraints: str) -> Tuple[Optional[dict], List[s
     return {"primary": primary, "secondary": secondary, "alpha": alpha}, out
 
 
-def _mix_prototype_rows(
-    prototypes: pd.DataFrame,
-    *,
-    primary: int,
-    secondary: int,
-    alpha: float,
-) -> pd.Series:
-    p1 = prototypes.loc[prototypes["cluster_id"] == primary]
-    p2 = prototypes.loc[prototypes["cluster_id"] == secondary]
-    if p1.empty or p2.empty:
-        raise ValueError(f"Unknown MIX clusters: primary={primary}, secondary={secondary}")
-
-    r1 = p1.iloc[0]
-    r2 = p2.iloc[0]
-
-    out = r1.copy()
-    for k in ("L_lab", "a_lab", "b_lab", "C_lab", "H_lab_deg"):
-        if k in r1.index and k in r2.index and pd.notna(r1[k]) and pd.notna(r2[k]):
-            out[k] = alpha * float(r1[k]) + (1.0 - alpha) * float(r2[k])
-
-    return out
-
-
 # ---------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------
@@ -366,67 +329,6 @@ def _check_constraint(c: Constraint) -> None:
             raise ValueError(f"Invalid cutpoint '{c.cutpoint}'.")
     if not np.isfinite(c.weight) or c.weight < 0:
         raise ValueError(f"Invalid weight '{c.weight}'.")
-
-
-# ---------------------------------------------------------------------
-# Cluster id injection
-# ---------------------------------------------------------------------
-
-def _load_assignments(assignments: Any) -> Optional[pd.DataFrame]:
-    """
-    Accept either:
-      - Path/str to CSV
-      - A DataFrame already loaded (AssetBundle case)
-      - None
-    """
-    if assignments is None:
-        return None
-    if isinstance(assignments, pd.DataFrame):
-        return assignments
-    p = Path(assignments)
-    if p.exists():
-        return pd.read_csv(p)
-    return None
-
-
-def _ensure_cluster_id(
-    df: pd.DataFrame,
-    prototypes: pd.DataFrame,
-    assignments: Optional[str | Path | pd.DataFrame],
-) -> pd.DataFrame:
-    """
-    FIX:
-      previous signature implied a Path but callers sometimes passed a DataFrame.
-      This accepts both, without silent misbehavior.
-    """
-    if "cluster_id" in df.columns:
-        return df
-
-    asg = _load_assignments(assignments)
-    if asg is not None and "cluster_id" in asg.columns:
-        key_cols = [c for c in ("product_id", "shade_id") if c in df.columns and c in asg.columns]
-        if key_cols:
-            df2 = df.copy()
-            asg2 = asg.copy()
-            for k in key_cols:
-                df2[k] = df2[k].astype(str)
-                asg2[k] = asg2[k].astype(str)
-
-            merged = df2.merge(asg2[key_cols + ["cluster_id"]], on=key_cols, how="left")
-            if merged["cluster_id"].notna().mean() > 0.95:
-                return merged
-
-    _require_cols(df, ("L_lab", "a_lab", "b_lab"), name="enriched df")
-    _require_cols(prototypes, ("cluster_id", "L_lab", "a_lab", "b_lab"), name="prototypes")
-
-    X = df[["L_lab", "a_lab", "b_lab"]].to_numpy(float)
-    P = prototypes[["L_lab", "a_lab", "b_lab"]].to_numpy(float)
-    pid = prototypes["cluster_id"].to_numpy(int)
-
-    nearest = pid[np.argmin(((X[:, None, :] - P[None, :, :]) ** 2).sum(axis=2), axis=1)]
-    out = df.copy()
-    out["cluster_id"] = nearest
-    return out
 
 
 # ---------------------------------------------------------------------
@@ -455,9 +357,7 @@ def _constraint_threshold_fixed(cal: dict, dim: str, level: str) -> float:
     try:
         return float(cal["thresholds"][dim][level])
     except Exception as e:
-        raise KeyError(
-            f"Missing fixed threshold for dim={dim!r} level={level!r} in calibration."
-        ) from e
+        raise KeyError(f"Missing fixed threshold for dim={dim!r} level={level!r} in calibration.") from e
 
 
 def _dim_cfg(cal: dict | None, dim: str) -> dict:
@@ -488,7 +388,6 @@ def _dim_relative_quantiles(cal: dict | None, dim: str) -> dict[str, float]:
                 continue
         if out:
             return out
-    # Default is intentionally conservative: "high" means top 10% when op is ">="
     return {"low": 0.70, "medium": 0.80, "high": 0.90, "very_high": 0.95}
 
 
@@ -531,7 +430,6 @@ def _constraint_threshold_relative(
     qmap = _dim_relative_quantiles(cal, dim)
     q = float(qmap.get(str(level).lower(), 0.80))
 
-    # "<=" should pick a LOW quantile, ">=" a HIGH quantile
     if str(op).strip() == "<=":
         q = 1.0 - q
 
@@ -577,8 +475,7 @@ def _constraint_violation(values: np.ndarray, op: str, threshold: float) -> np.n
       - "<=" : violation = max(0, values - threshold)
       - ">=" : violation = max(0, threshold - values)
 
-    CRITICAL:
-      penalty-only. Must NOT reward pushing values to extremes.
+    penalty-only. Must NOT reward pushing values to extremes.
     """
     if op == "<=":
         return np.maximum(0.0, values - threshold)
@@ -739,14 +636,45 @@ def _snap_numeric_cutpoints_to_joint_feasibility(
 
 
 # ---------------------------------------------------------------------
+# Preference features for anchor-based scoring (no prototypes)
+# ---------------------------------------------------------------------
+
+
+def _lab_to_C_H(Lab: Tuple[float, float, float]) -> tuple[float, float]:
+    _, a, b = Lab
+    C = float(np.sqrt(float(a) ** 2 + float(b) ** 2))
+    H = float(np.degrees(np.arctan2(float(b), float(a))))
+    if H < 0.0:
+        H += 360.0
+    return C, H
+
+
+def _proto_row_from_anchor(
+    *,
+    anchor_lab: Tuple[float, float, float],
+) -> pd.Series:
+    L0, a0, b0 = anchor_lab
+    C0, H0 = _lab_to_C_H((float(L0), float(a0), float(b0)))
+    return pd.Series(
+        {
+            "L_lab": float(L0),
+            "a_lab": float(a0),
+            "b_lab": float(b0),
+            "C_lab": float(C0),
+            "H_lab_deg": float(H0),
+        }
+    )
+
+
+# ---------------------------------------------------------------------
 # Scoring (CORE) - no implicit disk access
 # ---------------------------------------------------------------------
 
 
 def score_shades(
     df: pd.DataFrame,
-    prototypes: pd.DataFrame,
-    query: QuerySpec,
+    prototypes_or_query: pd.DataFrame | "QuerySpec" | None,
+    query: "QuerySpec" | None = None,
     *,
     lambda_constraints: float = 1.0,
     lambda_preference: float = 1.0,
@@ -756,10 +684,28 @@ def score_shades(
     joint_min_feasible_frac: float = 0.05,
     joint_clamp_to_calibration: bool = True,
 ) -> pd.DataFrame:
+    # --- API COMPAT ---
+    # Accept:
+    #   score_shades(df, query, ...)
+    #   score_shades(df, prototypes, query, ...)
+    if isinstance(prototypes_or_query, QuerySpec) and query is None:
+        prototypes = None
+        query = prototypes_or_query
+    else:
+        prototypes = prototypes_or_query
+        if query is None or not isinstance(query, QuerySpec):
+            raise TypeError("score_shades expected (df, query, ...) or (df, prototypes, query, ...).")
+
     if calibration is None:
         raise ValueError(
             "Missing 'calibration' dict. Pass it explicitly (loaded via io/assets or load_scoring_calibration(path))."
         )
+
+    # Accept NLP Constraint objects transparently (axis/direction/strength/meta)
+    constraints_in = query.constraints or ()
+    if constraints_in and (not hasattr(constraints_in[0], "dim")) and hasattr(constraints_in[0], "axis"):
+        constraints_in = constraints_from_nlp(constraints_in)
+        query = QuerySpec(constraints=tuple(constraints_in), anchor_lab=query.anchor_lab)
 
     _require_cols(
         df,
@@ -771,13 +717,25 @@ def score_shades(
     if work.empty:
         raise ValueError("No valid Lab rows to score.")
 
+    # --- prototype/anchor center selection ---
     if proto_row_override is not None:
         proto_row = proto_row_override
     else:
-        proto = prototypes.loc[prototypes["cluster_id"] == query.like_cluster_id]
-        if proto.empty:
-            raise ValueError(f"Unknown cluster_id={query.like_cluster_id}")
-        proto_row = proto.iloc[0]
+        if prototypes is None:
+            if query.anchor_lab is not None:
+                proto_row = _proto_row_from_anchor(anchor_lab=query.anchor_lab)
+            else:
+                # deterministic fallback: mean Lab of pool
+                L0 = float(work["L_lab"].astype(float).mean())
+                a0 = float(work["a_lab"].astype(float).mean())
+                b0 = float(work["b_lab"].astype(float).mean())
+                proto_row = _proto_row_from_anchor(anchor_lab=(L0, a0, b0))
+        else:
+            # cluster-based proto selection is still possible for scripts, but not required by library
+            _require_cols(prototypes, ("cluster_id", "L_lab", "a_lab", "b_lab"), name="prototypes")
+            # caller must pass the right row through proto_row_override OR provide a 'cluster_id' in prototypes
+            # We choose the FIRST row as a safe default if the caller does not override.
+            proto_row = prototypes.iloc[0]
 
     deltaE = _delta_e_to_proto(work, proto_row)
     deltaE_n = _delta_e_norm(deltaE, calibration)
@@ -791,9 +749,7 @@ def score_shades(
         clamp_to_calibration=bool(joint_clamp_to_calibration),
     )
 
-    total_penalty_n, penalty_df, extras_df = _apply_constraints(
-        work, constraints_eff, calibration=calibration
-    )
+    total_penalty_n, penalty_df, extras_df = _apply_constraints(work, constraints_eff, calibration=calibration)
 
     if float(lambda_preference) != 0.0:
         if preference_weights is None:
@@ -824,11 +780,7 @@ def score_shades(
         preference_score = 0.0
 
     # IMPORTANT: constraints are penalties (>=0), never rewards
-    score = (
-        -deltaE_n
-        + float(lambda_preference) * preference_score
-        - float(lambda_constraints) * total_penalty_n
-    )
+    score = -deltaE_n + float(lambda_preference) * preference_score - float(lambda_constraints) * total_penalty_n
 
     chip_hex_out = None
     if "chip_hex" in work.columns:
@@ -844,12 +796,11 @@ def score_shades(
             "product_name": work["product_name"].astype(str),
             "shade_name": work["shade_name"].astype(str),
             "url": work["url"].astype(str),
-
             "chip_hex": chip_hex_out if chip_hex_out is not None else pd.NA,
             "r": work["r"].astype("Int64") if "r" in work.columns else pd.NA,
             "g": work["g"].astype("Int64") if "g" in work.columns else pd.NA,
             "b": work["b"].astype("Int64") if "b" in work.columns else pd.NA,
-
+            # cluster_id removed from library scoring path; keep if present in df for UX only
             "cluster_id": work["cluster_id"].astype("Int64") if "cluster_id" in work.columns else pd.NA,
             "deltaE": deltaE,
             "deltaE_norm": deltaE_n,
@@ -863,7 +814,7 @@ def score_shades(
     out = pd.concat([out, extras_df, penalty_df], axis=1)
     out = out.sort_values(["score", "product_id", "shade_id"], ascending=[False, True, True], kind="mergesort")
 
-    # NOTE: keep your original dedupe policy; it can hide some shades if urls are shared.
+    # keep your original dedupe policy
     out = out.drop_duplicates(subset=["url", "shade_name"], keep="first")
 
     out = out.reset_index(drop=True)
@@ -904,39 +855,27 @@ def _parse_constraint(s: str) -> Constraint:
 def score_inventory(
     *,
     inventory: pd.DataFrame,
-    prototypes: Optional[pd.DataFrame] = None,
-    assignments_path: Optional[str | Path] = None,
-    cluster_id: int,
     constraints: str = "",
     lambda_constraints: float = 1.0,
     lambda_preference: float = 0.0,
+    anchor_lab: Optional[Tuple[float, float, float]] = None,
     calibration_path: Optional[str | Path] = None,
     preference_weights_path: Optional[str | Path] = None,
 ) -> pd.DataFrame:
+    """
+    Script wrapper (no clusters):
+      - Scores inventory against anchor_lab (if provided) else pool mean.
+      - No prototypes, no assignments, no cluster_id required.
+    """
     cal_path = Path(calibration_path) if calibration_path is not None else _default_calibration_for_scripts_only()
     cal = load_scoring_calibration(cal_path)
 
-    asg = Path(assignments_path) if assignments_path is not None else _default_assignments_for_scripts_only()
-
-    if prototypes is None:
-        proto_path = _default_prototypes_for_scripts_only()
-        prototypes = pd.read_csv(proto_path)
-
-    df = _ensure_cluster_id(inventory, prototypes, asg)
-
     mix, constraint_tokens = _parse_mix_and_constraints(constraints)
-    parsed: List[Constraint] = [_parse_constraint(s) for s in constraint_tokens]
-
-    query = QuerySpec(like_cluster_id=int(cluster_id), constraints=tuple(parsed))
-
-    proto_override = None
     if mix is not None:
-        proto_override = _mix_prototype_rows(
-            prototypes,
-            primary=int(mix["primary"]),
-            secondary=int(mix["secondary"]),
-            alpha=float(mix["alpha"]),
-        )
+        raise ValueError("MIX is not supported in no-clusters score_inventory(). Use anchor_lab explicitly.")
+
+    parsed: List[Constraint] = [_parse_constraint(s) for s in constraint_tokens]
+    query = QuerySpec(constraints=tuple(parsed), anchor_lab=anchor_lab)
 
     pref_weights = None
     if float(lambda_preference) != 0.0:
@@ -948,68 +887,67 @@ def score_inventory(
         pref_weights = load_preference_weights(pw_path)
 
     return score_shades(
-        df,
-        prototypes,
+        inventory,
+        None,
         query,
         lambda_constraints=float(lambda_constraints),
         lambda_preference=float(lambda_preference),
-        proto_row_override=proto_override,
         calibration=cal,
         preference_weights=pref_weights,
     )
 
 
 # ---------------------------------------------------------------------
-# CLI
+# CLI (no clusters)
 # ---------------------------------------------------------------------
 
 
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--cluster-id", type=int, required=True)
     p.add_argument("--constraint", action="append", default=[])
     p.add_argument("--lambda-constraints", type=float, default=1.0)
-    p.add_argument("--lambda-preference", type=float, default=0.0)  # FIX: default should be off
+    p.add_argument("--lambda-preference", type=float, default=0.0)  # default off
     p.add_argument("--infile", type=str, default=str(_default_enriched_for_scripts_only()))
-    p.add_argument("--prototypes", type=str, default=str(_default_prototypes_for_scripts_only()))
-    p.add_argument("--assignments", type=str, default=str(_default_assignments_for_scripts_only()))
     p.add_argument("--calibration", type=str, default=str(_default_calibration_for_scripts_only()))
     p.add_argument("--preference-weights", type=str, default=str(_default_preference_weights_for_scripts_only()))
     p.add_argument("--outdir", type=str, default=str(_default_outdir_for_scripts_only()))
+
+    # Anchor options
+    p.add_argument("--anchor-lab", type=str, default="", help='Anchor Lab "L,a,b"')
+    p.add_argument("--anchor-hex", type=str, default="", help="Anchor hex #RRGGBB (requires r,g,b not used here)")
     return p
+
+
+def _parse_anchor_lab(s: str) -> Optional[Tuple[float, float, float]]:
+    if not s:
+        return None
+    parts = [p.strip() for p in str(s).split(",") if p.strip()]
+    if len(parts) != 3:
+        raise ValueError(f"Invalid --anchor-lab {s!r} (expected 'L,a,b').")
+    return float(parts[0]), float(parts[1]), float(parts[2])
 
 
 def main() -> None:
     args = _build_argparser().parse_args()
 
     df = pd.read_csv(Path(args.infile))
-    prototypes = pd.read_csv(Path(args.prototypes))
-    assignments = Path(args.assignments) if args.assignments else None
 
-    df = _ensure_cluster_id(df, prototypes, assignments)
+    constraints = ";".join(args.constraint or [])
+    anchor_lab = _parse_anchor_lab(args.anchor_lab)
 
-    constraints = tuple(_parse_constraint(s) for s in (args.constraint or []))
-    query = QuerySpec(like_cluster_id=int(args.cluster_id), constraints=constraints)
-
-    cal = load_scoring_calibration(Path(args.calibration))
-
-    pref_weights = None
-    if float(args.lambda_preference) != 0.0:
-        pref_weights = load_preference_weights(Path(args.preference_weights))
-
-    scored = score_shades(
-        df,
-        prototypes,
-        query,
+    scored = score_inventory(
+        inventory=df,
+        constraints=constraints,
         lambda_constraints=float(args.lambda_constraints),
         lambda_preference=float(args.lambda_preference),
-        calibration=cal,
-        preference_weights=pref_weights,
+        anchor_lab=anchor_lab,
+        calibration_path=Path(args.calibration),
+        preference_weights_path=Path(args.preference_weights),
     )
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    outpath = outdir / f"scores_cluster_{int(args.cluster_id)}.csv"
+    outpath = outdir / "scores_anchor.csv"
     scored.to_csv(outpath, index=False)
     print(f"[OK] Wrote {outpath}")
 

@@ -21,10 +21,13 @@ class AxisThreshold:
     source: str                     # "merged"
 
 
+# NOTE: RAISE cutpoints must be high enough to be non-trivial after calibration snapping.
+# With your current calibration for light_hsl (low≈0.4118, medium≈0.4608, high≈0.5176),
+# a WEAK raise at 0.40 snaps to "low" and becomes a no-op for many pools.
 _CUTPOINTS_LOW = {
-    "STRONG": 0.65,
-    "MED": 0.50,
-    "WEAK": 0.40,
+    "STRONG": 0.70,
+    "MED": 0.60,
+    "WEAK": 0.55,
 }
 
 # Generic fallback (only used if axis not found)
@@ -102,7 +105,7 @@ def _one_axis(axis: Axis, d: AxisDecision) -> Optional[AxisThreshold]:
 
     # RAISE => set floor
     if sign > 0:
-        low = _clamp01(_CUTPOINTS_LOW.get(sname, 0.50))
+        low = _clamp01(_CUTPOINTS_LOW.get(sname, 0.60))
         return AxisThreshold(axis=axis, low=low, high=None, weight=w, source="merged")
 
     # LOWER => set cap

@@ -7,6 +7,7 @@ import pandas as pd
 
 from Shopping_assistant.io.assets import load_assets
 from Shopping_assistant.color.scoring import QuerySpec, score_shades
+from Shopping_assistant.nlp.schema import Axis, Direction, Strength, Constraint
 
 
 def _project_root() -> Path:
@@ -35,21 +36,6 @@ def _load_assets_defaults():
         ]
     )
 
-    prototypes = _resolve_first_existing(
-        [
-            data / "enriched_data" / "color_prototypes_fused_lab.csv",
-            data / "enriched_data" / "color_prototypes_fused.csv",
-            data / "enriched_data" / "color_prototypes_kmeans.csv",
-        ]
-    )
-
-    assignments = _resolve_first_existing(
-        [
-            data / "enriched_data" / "color_cluster_assignments_fused.csv",
-            data / "enriched_data" / "color_cluster_assignments.csv",
-        ]
-    )
-
     calibration = _resolve_first_existing(
         [
             data / "models" / "color_scoring_calibration.json",
@@ -58,17 +44,14 @@ def _load_assets_defaults():
 
     return load_assets(
         enriched_csv=enriched,
-        prototypes_csv=prototypes,
-        assignments_csv=assignments,
         calibration_json=calibration,
     )
 
 
-def _score_top20(inv: pd.DataFrame, proto: pd.DataFrame, cal: dict, *, cluster_id: int, constraints=()):
-    query = QuerySpec(like_cluster_id=int(cluster_id), constraints=tuple(constraints))
+def _score_top20(inv: pd.DataFrame, cal: dict, *, constraints=(), anchor_lab=None):
+    query = QuerySpec(anchor_lab=anchor_lab, constraints=tuple(constraints))
     scored = score_shades(
         inv,
-        proto,
         query,
         lambda_constraints=1.0,
         lambda_preference=0.0,
@@ -80,11 +63,11 @@ def _score_top20(inv: pd.DataFrame, proto: pd.DataFrame, cal: dict, *, cluster_i
 def test_reproducible_top20_same_inputs():
     assets = _load_assets_defaults()
 
-    out1 = _score_top20(assets.inventory, assets.prototypes, assets.calibration, cluster_id=0)
-    out2 = _score_top20(assets.inventory, assets.prototypes, assets.calibration, cluster_id=0)
+    out1 = _score_top20(assets.inventory, assets.calibration)
+    out2 = _score_top20(assets.inventory, assets.calibration)
 
-    key1 = list(zip(out1["product_id"], out1["shade_id"]))
-    key2 = list(zip(out2["product_id"], out2["shade_id"]))
+    key1 = list(zip(out1["product_id"].astype(str), out1["shade_id"].astype(str)))
+    key2 = list(zip(out2["product_id"].astype(str), out2["shade_id"].astype(str)))
     assert key1 == key2
 
 
@@ -94,35 +77,36 @@ def test_invariance_to_row_order_shuffle():
     inv = assets.inventory
     inv_shuf = inv.sample(frac=1.0, random_state=123).reset_index(drop=True)
 
-    out1 = _score_top20(inv, assets.prototypes, assets.calibration, cluster_id=0)
-    out2 = _score_top20(inv_shuf, assets.prototypes, assets.calibration, cluster_id=0)
+    out1 = _score_top20(inv, assets.calibration)
+    out2 = _score_top20(inv_shuf, assets.calibration)
 
-    key1 = list(zip(out1["product_id"], out1["shade_id"]))
-    key2 = list(zip(out2["product_id"], out2["shade_id"]))
+    key1 = list(zip(out1["product_id"].astype(str), out1["shade_id"].astype(str)))
+    key2 = list(zip(out2["product_id"].astype(str), out2["shade_id"].astype(str)))
     assert key1 == key2
 
 
 def test_constraints_reduce_violations_in_top20():
     assets = _load_assets_defaults()
 
-    base = _score_top20(assets.inventory, assets.prototypes, assets.calibration, cluster_id=0)
+    # Preconditions for this invariant
+    assert "sat_eff" in assets.inventory.columns, "inventory missing required column 'sat_eff'"
 
-    # keep using the inventory field directly (same logic as before)
-    constrained = score_shades(
+    base = _score_top20(assets.inventory, assets.calibration)
+
+    # Enforce lower saturation in the score (sat_eff <= low)
+    c = Constraint(
+        axis=Axis.SATURATION,
+        direction=Direction.LOWER,
+        strength=Strength.STRONG,
+        evidence="test_sat_low",
+        meta={"axis_query": "sat_eff", "tok": "sat", "quality": "low"},
+    )
+
+    constrained = _score_top20(
         assets.inventory,
-        assets.prototypes,
-        QuerySpec(
-            like_cluster_id=0,
-            constraints=(
-                # sat_eff<=low:1.0
-                # Construct via the public Constraint type? Not necessary if your score_shades
-                # expects Constraint objects; if it does, import Constraint and build it.
-            )
-        ),
-        lambda_constraints=1.0,
-        lambda_preference=0.0,
-        calibration=assets.calibration,
-    ).head(20)
+        assets.calibration,
+        constraints=(c,),
+    )
 
     inv_key = assets.inventory.copy()
     inv_key["product_id"] = inv_key["product_id"].astype(str)

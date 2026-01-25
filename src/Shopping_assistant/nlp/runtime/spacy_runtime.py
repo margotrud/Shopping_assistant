@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
 
 from Shopping_assistant.utils.optional_deps import require
 
@@ -12,10 +11,13 @@ def load_spacy(model: str):
     """
     Does:
         Load and cache a spaCy Language pipeline for the given model name.
+        Guaranteed single load per model name across the process.
     """
     spacy = require(
         "spacy",
         extra="spacy",
-        purpose="Needed for NLP parsing (single cached spaCy runtime).",
+        purpose="NLP parsing (cached spaCy runtime).",
     )
+
+    # CRITICAL: spacy.load MUST NOT be called outside this function
     return spacy.load(model)

@@ -125,7 +125,6 @@ def _filter_variants_by_similarity(
             kept.append(v)
             weights[v] = ss
 
-    # Always keep original label with weight 1.0
     weights[label] = 1.0
     kept = [label] + [v for v in kept if v != label]
     return kept, weights
@@ -135,9 +134,93 @@ def _with_meta(pred: AxisPred, extra: dict) -> AxisPred:
     meta = {**(pred.meta or {}), **(extra or {})}
     return AxisPred(
         axis=pred.axis,
-        confidence=float(pred.confidence),
+        confidence=float(pred.confidence) if pred.confidence is not None else 0.0,
         label=pred.label,
-        margin=float(pred.margin),
+        margin=float(pred.margin) if pred.margin is not None else 0.0,
+        meta=meta,
+    )
+
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+        if v != v:  # NaN
+            return float(default)
+        return v
+    except Exception:
+        return float(default)
+
+
+def _score_from_ranked(meta: dict | None, axis_name: str) -> tuple[float | None, float]:
+    """
+    Does:
+        Extract (score, margin) for an axis from meta["ranked"] if present.
+        ranked is expected as List[(axis_name, score)].
+    """
+    ranked = (meta or {}).get("ranked") or []
+    if not ranked:
+        return None, 0.0
+
+    try:
+        ranked2 = [(str(a), _safe_float(s, 0.0)) for a, s in ranked]
+    except Exception:
+        return None, 0.0
+
+    ax = str(axis_name)
+    top1_name, top1_score = ranked2[0]
+    top2_score = ranked2[1][1] if len(ranked2) > 1 else 0.0
+
+    if top1_name == ax:
+        return float(top1_score), float(top1_score - top2_score)
+
+    for a, s in ranked2:
+        if a == ax:
+            return float(s), float(s - top2_score)
+
+    return None, 0.0
+
+
+def _ensure_scored_pred(pred: AxisPred, *, model_name: str, source_if_fixed: str) -> AxisPred:
+    """
+    Does:
+        Guarantee that if axis is set, confidence/margin are numeric (not None).
+        This prevents downstream code from dropping valid axis predictions due to missing score.
+    """
+    if pred.axis is None:
+        return pred
+
+    conf = pred.confidence
+    margin = pred.margin
+
+    if conf is not None and margin is not None:
+        try:
+            _ = float(conf)
+            _ = float(margin)
+            return pred
+        except Exception:
+            pass
+
+    axis_name = getattr(pred.axis, "value", None) or str(pred.axis)
+
+    score, m = _score_from_ranked(pred.meta or {}, axis_name)
+    if score is None:
+        score = 1.0
+        m = 0.0
+
+    meta = dict(pred.meta or {})
+    meta.update(
+        {
+            "source": meta.get("source") or source_if_fixed,
+            "model": meta.get("model") or model_name,
+            "axis_score_missing_fixed": True,
+        }
+    )
+
+    return AxisPred(
+        axis=pred.axis,
+        confidence=float(score),
+        label=pred.label,
+        margin=float(m),
         meta=meta,
     )
 
@@ -180,12 +263,12 @@ def _weighted_ranked_vote(
 def predict_axis(
     label: str,
     *,
-    context: str = "",
+    context: str = "cosmetics color attribute",
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     min_sim: float = 0.35,
     min_margin: float = 0.08,
     debug: bool = False,
-    min_variant_sim: float = 0.60,
+    min_variant_sim: float = 0.75,
     vote_topk: int = 3,
 ) -> AxisPred:
     """
@@ -195,20 +278,19 @@ def predict_axis(
         If the vote abstains, fall back to raw label top-1 if it clears min_sim (marked ambiguous).
         Exposes raw ranked diagnostics when debug=True.
     """
-    # Thresholded classifier (normal path)
     fn = _get_axis_classifier(model_name, min_sim=min_sim, min_margin=min_margin, debug=debug)
 
     label_clean = (label or "").strip()
     is_single_token = (" " not in label_clean) and ("-" not in label_clean) and bool(label_clean)
 
     pred0 = fn(label, context=context)
+
     if pred0.axis is not None:
-        return pred0
+        return _ensure_scored_pred(pred0, model_name=model_name, source_if_fixed="axis_classifier_axis_set_no_score")
 
     if not is_single_token:
         return pred0
 
-    # WordNet variants + similarity weights
     try:
         variants0 = list(_wordnet_expand_label(label_clean))
         variants, weights = _filter_variants_by_similarity(
@@ -220,7 +302,6 @@ def predict_axis(
     except Exception as e:
         return _with_meta(pred0, {"wordnet_error": repr(e)}) if debug else pred0
 
-    # Raw classifier: always provides ranked scores
     fn_raw = _get_axis_classifier(model_name, min_sim=0.0, min_margin=0.0, debug=True)
 
     raw_label_ranked = (fn_raw(label_clean, context=context).meta or {}).get("ranked") or []
@@ -255,8 +336,6 @@ def predict_axis(
     )
 
     if vote_abstains:
-        # ---- HARD FALLBACK: never drop a reasonable single-token axis to None.
-        # If raw label top1 clears min_sim, return it but mark ambiguous.
         if raw_label_ranked:
             top1_name, top1_score = raw_label_ranked[0]
             top2_score = raw_label_ranked[1][1] if len(raw_label_ranked) > 1 else 0.0

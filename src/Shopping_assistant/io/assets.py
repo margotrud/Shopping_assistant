@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 import json
+import os
 
 import pandas as pd
 
 from Shopping_assistant.io.data_schema import (
     validate_inventory,
-    validate_prototypes,
-    validate_assignments,
     validate_calibration,
 )
 
@@ -18,82 +18,76 @@ from Shopping_assistant.io.data_schema import (
 @dataclass(frozen=True)
 class AssetBundle:
     inventory: pd.DataFrame
-    prototypes: pd.DataFrame
-    assignments: pd.DataFrame
     calibration: dict
-
-
-def _inject_cluster_id_if_missing(inventory: pd.DataFrame, assignments: pd.DataFrame) -> pd.DataFrame:
-    """
-    Does:
-        If inventory lacks cluster_id, left-merge it from assignments on the best available key(s).
-        Prefers (product_id, shade_id) if present in both; else uses (shade_id) if present in both.
-
-    Raises:
-        KeyError if no suitable join keys exist.
-        ValueError if merge yields too many missing cluster_id values.
-    """
-    if "cluster_id" in inventory.columns:
-        return inventory
-
-    inv = inventory.copy()
-
-    # pick join keys deterministically
-    keys: list[str] = []
-    if all(c in inv.columns for c in ("product_id", "shade_id")) and all(c in assignments.columns for c in ("product_id", "shade_id")):
-        keys = ["product_id", "shade_id"]
-    elif "shade_id" in inv.columns and "shade_id" in assignments.columns:
-        keys = ["shade_id"]
-    else:
-        raise KeyError("Cannot inject cluster_id: no compatible key between inventory and assignments.")
-
-    # normalize dtypes for merge stability
-    for k in keys:
-        inv[k] = inv[k].astype(str)
-    asg = assignments.copy()
-    for k in keys:
-        asg[k] = asg[k].astype(str)
-
-    if "cluster_id" not in asg.columns:
-        raise KeyError("assignments missing required column 'cluster_id'.")
-
-    merged = inv.merge(asg[keys + ["cluster_id"]], on=keys, how="left")
-
-    miss = merged["cluster_id"].isna().mean()
-    if miss > 0.05:
-        raise ValueError(
-            f"cluster_id injection failed: {miss:.1%} rows missing after merge on {keys}. "
-            "Fix assignments or rebuild inventory with cluster_id."
-        )
-
-    return merged
 
 
 def load_assets(
     *,
     enriched_csv: Path,
-    prototypes_csv: Path,
-    assignments_csv: Path,
     calibration_json: Path,
 ) -> AssetBundle:
     inventory = pd.read_csv(enriched_csv)
-    prototypes = pd.read_csv(prototypes_csv)
-    assignments = pd.read_csv(assignments_csv)
     calibration = json.loads(calibration_json.read_text(encoding="utf-8"))
 
-    # Validate what we can early
-    validate_prototypes(prototypes)
-    validate_assignments(assignments)
     validate_calibration(calibration)
-
-    # Ensure inventory has cluster_id before strict validation
-    inventory = _inject_cluster_id_if_missing(inventory, assignments)
-
     validate_inventory(inventory)
 
     return AssetBundle(
         inventory=inventory,
-        prototypes=prototypes,
-        assignments=assignments,
         calibration=calibration,
+    )
+
+
+# --- Default assets loading (env-first, strict discovery fallback) ---
+
+
+def _env_path(key: str) -> Path | None:
+    v = os.environ.get(key, "").strip()
+    return None if not v else Path(v)
+
+
+def _find_one(root: Path, patterns: list[str], *, label: str) -> Path:
+    hits: list[Path] = []
+    for pat in patterns:
+        hits.extend(sorted(root.glob(pat)))
+    hits = [p for p in hits if p.is_file()]
+
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) == 0:
+        raise FileNotFoundError(
+            f"Cannot locate {label} under {root}. "
+            f"Tried patterns={patterns}. "
+            f"Either set env var SA_{label.upper()}_PATH or place exactly one matching file."
+        )
+    raise FileExistsError(
+        f"Ambiguous {label} under {root}: {hits}. "
+        f"Keep exactly one matching file or set env var SA_{label.upper()}_PATH."
+    )
+
+
+@lru_cache(maxsize=1)
+def load_default_assets(*, root: Path | None = None) -> AssetBundle:
+    """
+    Does:
+        Load AssetBundle from env paths; else strict-discover files under root (default: ./data).
+    """
+    enriched = _env_path("SA_ENRICHED_CSV_PATH")
+    calibration = _env_path("SA_CALIBRATION_JSON_PATH")
+
+    if all([enriched, calibration]):
+        return load_assets(
+            enriched_csv=enriched,
+            calibration_json=calibration,
+        )
+
+    if root is None:
+        root = Path(os.environ.get("SA_ASSETS_ROOT", "data")).resolve()
+
+    enriched = enriched or _find_one(root, ["*enriched*.csv", "*inventory*.csv", "*enriched.csv"], label="enriched_csv")
+    calibration = calibration or _find_one(root, ["*calibration*.json"], label="calibration_json")
+
+    return load_assets(
+        enriched_csv=enriched,
+        calibration_json=calibration,
     )

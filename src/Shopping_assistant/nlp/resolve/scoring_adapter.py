@@ -22,7 +22,7 @@ _ALLOWED_LEVELS = ("low", "medium", "high", "very_high")
 # Only safe for dims that are natively on ~[0,1] in scoring space.
 # DO NOT add sat_eff here (it is not on [0,1] and must remain calibration-driven).
 _DEFAULT_LEVEL_CUTS_01: Dict[str, Tuple[float, float, float]] = {
-    # boundaries between low/medium/high/very_high
+    # representative thresholds for levels (monotone)
     "light_hsl": (0.35, 0.55, 0.75),
     "sat_hsl": (0.30, 0.50, 0.70),
     "depth": (0.30, 0.50, 0.70),
@@ -44,13 +44,13 @@ def build_constraints_blob_from_thresholds(
         LEVEL is derived from the NUMERIC cutpoint (AxisThreshold.low/high) by snapping to a
         calibrated LEVEL for that dim.
 
-        If a dim's calibration thresholds are on [0,1], we snap by nearest numeric distance.
-        If a dim's calibration thresholds are NOT on [0,1] (e.g. sat_eff), we interpret the NLP
-        cutpoint as a [0,1] rank/quantile and choose the corresponding LEVEL by index.
+        Key fix:
+          - For op=">=" (floor), snap by CEIL (choose the smallest level threshold >= value).
+          - For op="<=" (cap), snap by FLOOR (choose the largest level threshold <= value).
 
-        If calibration is missing/unusable for a dim, the constraint is skipped (do not emit
-        numeric cutpoints: they are on the NLP [0,1] scale and will break dims like sat_eff).
-        Exception: for dims known to be on [0,1], we use deterministic default cutpoints.
+        Rationale:
+          "nearest" snapping can produce constraints that are trivially satisfied by the entire pool,
+          making them no-ops (observed for bright red: light_hsl>=low).
     """
     tokens: List[str] = []
     for axis, th in thresholds.items():
@@ -81,8 +81,8 @@ def _threshold_to_op_level(
         Map an AxisThreshold (low/high present) to a (op, level) compatible with calibration thresholds.
 
     Rule:
-        - If th.low is set: op=">=" (floor) and level is snapped from numeric th.low via calibration.
-        - If th.high is set: op="<=" (cap) and level is snapped from numeric th.high via calibration.
+        - If th.low is set: op=">=" (floor) and level snapped from numeric th.low.
+        - If th.high is set: op="<=" (cap) and level snapped from numeric th.high.
         - If both low and high are set: not supported here (skip).
     """
     if th.low is not None and th.high is not None:
@@ -90,12 +90,12 @@ def _threshold_to_op_level(
 
     if th.low is not None:
         op = ">="
-        lvl = _level_from_numeric_threshold(dim=dim, value=float(th.low), calibration=calibration)
+        lvl = _level_from_numeric_threshold(dim=dim, value=float(th.low), op=op, calibration=calibration)
         return op, lvl
 
     if th.high is not None:
         op = "<="
-        lvl = _level_from_numeric_threshold(dim=dim, value=float(th.high), calibration=calibration)
+        lvl = _level_from_numeric_threshold(dim=dim, value=float(th.high), op=op, calibration=calibration)
         return op, lvl
 
     return None, None
@@ -105,6 +105,7 @@ def _level_from_numeric_threshold(
     *,
     dim: str,
     value: float,
+    op: str,
     calibration: Mapping[str, Any] | None,
 ) -> Optional[str]:
     """
@@ -112,29 +113,41 @@ def _level_from_numeric_threshold(
         Convert an NLP numeric cutpoint into a calibrated LEVEL for a given dim.
 
     Correct behavior:
-        - If calibration thresholds for dim are in [0,1], snap by nearest numeric distance.
+        - If calibration thresholds for dim are in [0,1], snap MONOTONICALLY:
+            op=">=" -> CEIL snap
+            op="<=" -> FLOOR snap
         - Otherwise (dim thresholds are on another scale), interpret NLP value as a [0,1] rank/quantile
-          and choose the LEVEL by position in the sorted thresholds list.
+          and choose the LEVEL by position with CEIL/FLOOR depending on op.
 
     Fallback:
         - If calibration is missing, only dims known to live on [0,1] may be snapped using
           default cutpoints (_DEFAULT_LEVEL_CUTS_01). All other dims are skipped.
     """
-    # Fallback when calibration missing: only safe for dims on ~[0,1]
+    # --- Fallback when calibration missing: only safe for dims on ~[0,1] ---
     if calibration is None:
         cuts = _DEFAULT_LEVEL_CUTS_01.get(dim)
         if cuts is None:
             return None  # e.g. sat_eff must not be snapped without calibration
-        a, b, c = cuts
-        v = float(value)
-        if v <= a:
-            return "low"
-        if v <= b:
-            return "medium"
-        if v <= c:
-            return "high"
-        return "very_high"
 
+        a, b, c = cuts
+        # build monotone level thresholds
+        items_sorted = [("low", a), ("medium", b), ("high", c), ("very_high", 1.0)]
+        v = float(value)
+
+        if op == ">=":
+            # CEIL: first threshold >= v, else max
+            for lvl, thr in items_sorted:
+                if thr >= v:
+                    return lvl
+            return items_sorted[-1][0]
+
+        # "<=" FLOOR: last threshold <= v, else min
+        for lvl, thr in reversed(items_sorted):
+            if thr <= v:
+                return lvl
+        return items_sorted[0][0]
+
+    # --- Calibration present ---
     levels_map = _get_dim_thresholds(calibration, dim=dim)
     if not levels_map:
         return None
@@ -148,10 +161,22 @@ def _level_from_numeric_threshold(
     vals = [v for _, v in items_sorted]
     vmin, vmax = min(vals), max(vals)
 
-    # Case A: dim is calibrated on ~[0,1] => nearest numeric snapping is valid
+    # Case A: dim is calibrated on ~[0,1] => monotone snapping in numeric space
     if 0.0 <= vmin and vmax <= 1.0:
-        best_level, _ = min(items_sorted, key=lambda kv: abs(kv[1] - float(value)))
-        return best_level
+        v = float(value)
+
+        if op == ">=":
+            # CEIL: first threshold >= v, else max
+            for lvl, thr in items_sorted:
+                if thr >= v:
+                    return lvl
+            return items_sorted[-1][0]
+
+        # "<=" FLOOR: last threshold <= v, else min
+        for lvl, thr in reversed(items_sorted):
+            if thr <= v:
+                return lvl
+        return items_sorted[0][0]
 
     # Case B: dim calibration scale != [0,1] => treat NLP cutpoint as rank/quantile
     q = float(value)
@@ -160,8 +185,17 @@ def _level_from_numeric_threshold(
     if q > 1.0:
         q = 1.0
 
-    idx = int(round(q * (len(items_sorted) - 1)))
-    idx = max(0, min(idx, len(items_sorted) - 1))
+    n = len(items_sorted)
+    pos = q * (n - 1)
+
+    if op == ">=":
+        # CEIL index
+        idx = int(pos) if abs(pos - int(pos)) < 1e-12 else int(pos) + 1
+    else:
+        # "<=" FLOOR index
+        idx = int(pos)
+
+    idx = max(0, min(idx, n - 1))
     return items_sorted[idx][0]
 
 

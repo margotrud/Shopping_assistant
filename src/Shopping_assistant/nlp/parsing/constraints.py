@@ -1,3 +1,4 @@
+# src/Shopping_assistant/nlp/parsing/constraints.py
 from __future__ import annotations
 
 import math
@@ -21,7 +22,10 @@ else:
 # Axis mapping
 # ---------------------------------------------------------------------
 
-_AXIS_LEXICON: Dict[str, Axis] = {}
+_AXIS_LEXICON: Dict[str, Axis] = {
+    # Hard override for known ambiguous token(s)
+    "dim": Axis.BRIGHTNESS,
+}
 
 _COLOR_DOMAIN_NOUNS = {
     "color", "shade", "tone", "tint", "hue",
@@ -55,7 +59,17 @@ def _norm_text_piece(s: str) -> str:
 
 
 def _clean_axis_core(tok: Token) -> str:
-    return _norm_text_piece(tok.lemma_)
+    """
+    Keep surface form for adjectival participles (spaCy often tags them as VERB/VBN):
+    "muted", "toned", "sheered" should NOT become "mute/tone/sheer" for axis mapping.
+    """
+    raw = _norm_text_piece(tok.text)
+    lem = _norm_text_piece(tok.lemma_)
+
+    if tok.dep_ == "amod" and tok.tag_ in {"VBN", "VBD"}:
+        return raw or lem
+
+    return lem or raw
 
 
 def _iter_axis_queries(tok: Token) -> List[str]:
@@ -86,7 +100,7 @@ def _axis_from_text(
 ) -> Tuple[Optional[Axis], Dict[str, Any], Any]:
     pred = predict_axis(
         text,
-        context="",
+        context="cosmetics color attribute",
         model_name=_normalize_model_name(mapper_model),
         min_sim=float(mapper_threshold),
         min_margin=float(mapper_min_margin),
@@ -264,6 +278,29 @@ def _axis_from_token(
     lemma = _norm_text_piece(tok.lemma_)
     base_meta: Dict[str, Any] = {"tok_lemma": lemma, "tok_pos": tok.pos_, "tok_text": tok.text}
 
+    # --- LEXICON FIRST (hard override for known ambiguous tokens) ---
+    axis2 = _AXIS_LEXICON.get(lemma)
+
+    if axis2 is None and lemma.endswith("ness") and len(lemma) > 6:
+        axis2 = _AXIS_LEXICON.get(lemma[:-4])  # dimness -> dim
+
+    if axis2 is None and lemma.endswith("ed") and len(lemma) > 4:
+        axis2 = _AXIS_LEXICON.get(lemma[:-2])  # dimmed -> dim
+
+    if axis2 is not None:
+        meta = {
+            **base_meta,
+            "axis_source": "lexicon_override",
+            "axis_score": 1.0,
+            "axis_margin": 1.0,
+            "axis": axis2.value,
+            "axis_query": lemma,
+            "axis_gate": "LEXICON",
+            "axis_query_strategy": "lexicon_first",
+        }
+        return axis2, meta
+
+    # --- then embedding tries ---
     last_meta2: Dict[str, Any] = {}
     last_fb_meta: Dict[str, Any] = {}
 
@@ -308,26 +345,12 @@ def _axis_from_token(
                 }
                 return ax_fb, meta
 
-    axis2 = _AXIS_LEXICON.get(lemma)
-    if axis2 is not None:
-        meta = {
-            **base_meta,
-            "axis_source": "lexicon_fallback",
-            "axis_score": 1.0,
-            "axis_margin": 1.0,
-            "axis": axis2.value,
-            "axis_query": lemma,
-            "axis_gate": "LEXICON",
-            "axis_query_strategy": "lexicon_fallback",
-        }
-        return axis2, meta
-
     meta = {**base_meta, **last_meta2, **last_fb_meta, "axis_query_strategy": "multi_try_all_failed"}
     return None, meta
 
 
 # ---------------------------------------------------------------------
-# NON-STATIC negation + degree + axis-extremeness (NO word lists)
+# NON-STATIC negation + degree + axis-extremeness (NO noise-word lists)
 # ---------------------------------------------------------------------
 
 def _has_negation(tok: Token) -> bool:
@@ -429,13 +452,6 @@ def _has_negation_anywhere(
 def _degree_operator(tok: Token, *, model_name: str = "all-MiniLM-L6-v2", window: int = 4) -> Tuple[str, float]:
     """
     Returns (op, score) where op in {"CAP","MORE","LESS","NONE"}.
-
-    Strategy:
-      1) Collect ADV-like candidates (advmods + left window)
-      2) Deterministic catch for grammatical operators: too/more/less
-         - also scan subtree (and optionally head subtree) because the constraint
-           candidate token might not be the adjective itself.
-      3) Semantic fallback to operator anchors
     """
     doc = tok.doc
     cands: List[Token] = []
@@ -532,14 +548,42 @@ def _adv_intensity_score(adv_lemma: str, *, model_name: str) -> float:
     return float(_softmax2(s_low, s_high, t=0.08))
 
 
+# ---------------------------------------------------------------------
+# Axis poles (conceptual, not token lists)
+# ---------------------------------------------------------------------
+
 @lru_cache(maxsize=256)
 def _axis_poles(model_name: str) -> Dict[Axis, Tuple[str, str, str]]:
+    """
+    Returns (low_pole_text, high_pole_text, neutral_text) for extremeness scoring.
+    These are conceptual descriptions (not synonym lists).
+    """
     return {
-        Axis.BRIGHTNESS: ("dark", "bright", "neutral"),
-        Axis.DEPTH: ("light", "deep", "neutral"),
-        Axis.SATURATION: ("muted", "saturated", "neutral"),
-        Axis.VIBRANCY: ("dull", "vivid", "neutral"),
-        Axis.CLARITY: ("muddy", "clear", "neutral"),
+        Axis.BRIGHTNESS: (
+            "lower perceived lightness; darker appearance; less light in the shade",
+            "higher perceived lightness; lighter appearance; more light in the shade",
+            "neither especially light nor dark; medium lightness",
+        ),
+        Axis.DEPTH: (
+            "lower depth; less dense; less rich; less inky appearance",
+            "higher depth; richer denser inkier appearance",
+            "moderate depth; neither especially deep nor shallow",
+        ),
+        Axis.SATURATION: (
+            "less saturated chroma; more muted or desaturated appearance",
+            "more saturated chroma; less muted; stronger chroma",
+            "moderate saturation; neither muted nor highly saturated",
+        ),
+        Axis.VIBRANCY: (
+            "less neon/flashy; more subdued; not electric or fluorescent",
+            "more neon/electric/fluorescent; flashier appearance",
+            "moderate vibrancy; neither subdued nor neon",
+        ),
+        Axis.CLARITY: (
+            "less clear; hazy or muddy; softer appearance",
+            "clearer crisper cleaner appearance; less muddy",
+            "moderate clarity; neither especially crisp nor muddy",
+        ),
     }
 
 
@@ -574,10 +618,6 @@ def _axis_extremeness(tok: Token, *, axis: Axis, model_name: str) -> Tuple[float
     direction = Direction.RAISE if s_high >= s_low else Direction.LOWER
     return max(0.0, min(1.0, ext)), direction
 
-
-# ----------------------------
-# FIX: API alignment (accept axis=...)
-# ----------------------------
 
 def _degree_score(
     tok: Token,
@@ -636,56 +676,139 @@ def _invert_dir(d: Direction) -> Direction:
     return Direction.LOWER if d == Direction.RAISE else Direction.RAISE
 
 
+# ---------------------------------------------------------------------
+# Direction inference (semantic poles; no token tables)
+# ---------------------------------------------------------------------
+
+@lru_cache(maxsize=256)
+def _axis_dir_poles(model_name: str) -> Dict[Axis, Tuple[str, str]]:
+    """
+    Returns (raise_pole_text, lower_pole_text) for direction inference.
+    These are conceptual descriptions (not synonym lists).
+    """
+    return {
+        Axis.BRIGHTNESS: (
+            "increase perceived lightness; make the shade lighter / brighter",
+            "decrease perceived lightness; make the shade darker / less bright",
+        ),
+        Axis.DEPTH: (
+            "increase perceived depth; make the shade deeper / richer / inkier",
+            "decrease perceived depth; make the shade less deep / less inky",
+        ),
+        Axis.SATURATION: (
+            "increase saturation/chroma; make the shade more saturated, less muted",
+            "decrease saturation/chroma; make the shade more muted / desaturated",
+        ),
+        Axis.VIBRANCY: (
+            "increase neon/electric/flashy feel; more fluorescent / vivid pop",
+            "decrease neon/electric/flashy feel; more subdued, not fluorescent",
+        ),
+        Axis.CLARITY: (
+            "increase clarity; cleaner/crisper appearance; less muddy",
+            "decrease clarity; hazier/muddier/softer appearance",
+        ),
+    }
+
+
+def _semantic_direction(
+    tok: Token,
+    *,
+    axis: Axis,
+    model_name: str,
+    min_delta: float = 0.03,
+) -> Optional[Direction]:
+    lemma = _norm_text_piece(tok.lemma_) or _norm_text_piece(tok.text)
+    if not lemma:
+        return None
+
+    poles = _axis_dir_poles(model_name).get(axis)
+    if not poles:
+        return None
+
+    raise_txt, lower_txt = poles
+    v = _text_vec(lemma, model_name=model_name)
+    v_raise = _text_vec(raise_txt, model_name=model_name)
+    v_lower = _text_vec(lower_txt, model_name=model_name)
+
+    s_raise = _cos_sim(v, v_raise)
+    s_lower = _cos_sim(v, v_lower)
+
+    if abs(float(s_raise) - float(s_lower)) < float(min_delta):
+        return None
+    return Direction.RAISE if s_raise > s_lower else Direction.LOWER
+
+
 def _direction_from_context(
     tok: Token,
     *,
     axis: Axis,
     model_name: str = "all-MiniLM-L6-v2",
 ) -> Direction:
-    """
-    Compute direction using:
-      - base preference implied by the adjective vs axis poles (axis_extremeness_dir)
-      - operator: MORE keeps base, LESS/CAP invert base
-      - negation: invert unless operator is CAP (i.e., "not too X" is already a cap)
-    """
-    _ext, base_dir = _axis_extremeness(tok, axis=axis, model_name=model_name)
+    # Base direction from semantic poles (preferred). Fallback to extremeness-derived direction.
+    base_dir = _semantic_direction(tok, axis=axis, model_name=model_name)
+    if base_dir is None:
+        _ext, base_dir = _axis_extremeness(tok, axis=axis, model_name=model_name)
 
     op, _ = _degree_operator(tok, model_name=model_name)
+    neg = _has_negation_anywhere(tok, model_name=model_name)
 
-    if op in {"LESS", "CAP"}:
+    if op == "LESS":
         direction = _invert_dir(base_dir)
+    elif op == "CAP":
+        direction = _invert_dir(base_dir) if neg else base_dir
     else:
-        # MORE or NONE
         direction = base_dir
 
-    if _has_negation_anywhere(tok, model_name=model_name) and op != "CAP":
+    if neg and op != "CAP":
         direction = _invert_dir(direction)
 
     return direction
 
 
 def _evidence(tok: Token, *, model_name: str = "all-MiniLM-L6-v2") -> tuple[str, int, int]:
+    """
+    Evidence must be noise-free and reconstructable:
+    - Keep only: negation cue(s) + grammatical degree operator(s) + head token.
+    - Do NOT include discourse intensifiers (e.g. "really") => no advmod harvesting.
+    """
+    doc = tok.doc
+
     toks: List[Token] = [tok]
 
-    for ch in tok.children:
-        if ch.dep_ == "neg":
-            toks.append(ch)
-        elif ch.dep_ == "advmod" and ch.pos_ == "ADV":
-            toks.append(ch)
-
+    # negation cues (syntactic + semantic window)
+    toks.extend([ch for ch in tok.children if ch.dep_ == "neg"])
     toks.extend(_neg_cues_in_window(tok, window=3, model_name=model_name))
 
-    doc = tok.doc
+    # grammatical degree operators only (small fixed set: not a "noise list")
+    def _add_degree_ops(root: Token) -> None:
+        for t in root.subtree:
+            lem = _norm_text_piece(t.lemma_) or _norm_text_piece(t.text)
+            if lem in {"too", "more", "less"}:
+                toks.append(t)
+
+    _add_degree_ops(tok)
+    head = getattr(tok, "head", None)
+    if head is not None and head is not tok:
+        _add_degree_ops(head)
+
+    # also check left window for "too/more/less" when parse is weird
     for j in (tok.i - 1, tok.i - 2, tok.i - 3):
-        if j >= 0 and doc[j].pos_ == "ADV":
-            toks.append(doc[j])
+        if j >= 0:
+            t = doc[j]
+            lem = _norm_text_piece(t.lemma_) or _norm_text_piece(t.text)
+            if lem in {"too", "more", "less"}:
+                toks.append(t)
 
     toks = sorted({t.i: t for t in toks}.values(), key=lambda t: t.i)
+
     start = toks[0].idx
     last = toks[-1]
     end = last.idx + len(last.text)
 
-    evidence = " ".join(t.text for t in toks)
+    # normalize token text (handle n't -> not) and force lowercase for contract stability
+    ev_parts = [_norm_text_piece(t.text) for t in toks]
+    evidence = " ".join(" ".join(ev_parts).split()).strip().lower()
+
     return evidence, int(start), int(end)
 
 
@@ -711,18 +834,15 @@ def _is_adjectival_noun(tok: Token) -> bool:
     if tok.is_stop or tok.is_punct or tok.is_space:
         return False
 
-    # critical: never allow product/color domain nouns
     if _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
         return False
 
     if len(tok.text) <= 2:
         return False
 
-    # If the NOUN itself is used adjectivally (rare), allow; but avoid amod-only nouns
     if tok.dep_ in {"amod", "acomp", "attr"}:
         return True
 
-    # NOUN with advmods can be an adjectival usage (rare) - still blocked for domain nouns above
     if any(ch.dep_ == "advmod" and ch.pos_ == "ADV" for ch in tok.children):
         return True
 
@@ -734,7 +854,25 @@ def _is_constraint_candidate(tok: Token) -> bool:
         return False
     if len(tok.text) <= 2:
         return False
+
+    lem = _norm_text_piece(tok.lemma_) or _norm_text_piece(tok.text)
+    head = getattr(tok, "head", None)
+    if (
+        head is not None
+        and head.pos_ in {"NOUN", "PROPN"}
+        and _norm_text_piece(head.lemma_) in _COLOR_DOMAIN_NOUNS
+        and tok.dep_ in {"amod", "compound"}
+    ):
+        if lem in _AXIS_LEXICON:
+            return True
+        if lem.endswith("ness") and len(lem) > 4 and (lem[:-4] in _AXIS_LEXICON):
+            return True
+        if lem.endswith("ed") and len(lem) > 3 and (lem[:-2] in _AXIS_LEXICON):
+            return True
+
     if tok.pos_ in {"VERB", "AUX"}:
+        if tok.dep_ == "amod" and tok.tag_ in {"VBN", "VBD"}:
+            return True
         return False
 
     if tok.pos_ == "ADJ":
@@ -744,13 +882,11 @@ def _is_constraint_candidate(tok: Token) -> bool:
         return True
 
     if _has_negation(tok) and tok.pos_ in {"ADJ", "ADV", "NOUN"}:
-        # still block domain nouns
         if tok.pos_ == "NOUN" and _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
             return False
         return True
 
     if any(ch.dep_ == "advmod" and ch.pos_ == "ADV" for ch in tok.children):
-        # still block domain nouns
         if tok.pos_ == "NOUN" and _norm_text_piece(tok.lemma_) in _COLOR_DOMAIN_NOUNS:
             return False
         return True
@@ -859,15 +995,18 @@ def extract_constraints_from_doc(
 ) -> List[Constraint]:
     out: List[Constraint] = []
 
+    blocked = {(_norm_text_piece(x) or x) for x in (blocked_lemmas or set()) if (x or "").strip()}
+
     for tok in doc:
         if not _is_constraint_candidate(tok):
             continue
 
-        # redirect NOUN->amod ADJ early (fixes "lipstick, not too bright")
         tok = _redirect_to_amod_adj(tok)
 
-        lemma = tok.lemma_.lower()
-        if blocked_lemmas and lemma in blocked_lemmas:
+        # block both lemma and surface (robust to spaCy lemmatization oddities)
+        lem = _norm_text_piece(getattr(tok, "lemma_", "") or tok.text)
+        surf = _norm_text_piece(tok.text)
+        if blocked and ((lem in blocked) or (surf in blocked)):
             continue
 
         axis, axis_meta = _axis_from_token(
@@ -916,7 +1055,6 @@ def extract_constraints_from_doc(
         direction = _direction_from_context(tok, axis=axis, model_name=mapper_model)
         strength = _degree_strength(tok, axis=axis, model_name=mapper_model)
 
-        # Optional: make negations not look "weak" when they are the only signal
         if _has_negation_anywhere(tok, model_name=mapper_model) and strength == Strength.WEAK:
             strength = Strength.MED
 
@@ -945,8 +1083,11 @@ def extract_constraints_from_doc(
                     "degree_op": op,
                     "axis_extremeness": float(ax_ext),
                     "axis_extremeness_dir": ax_dir.value,
+                    # keep both names (some tests/loggers expect one or the other)
                     "evidence_char_start": ev_start,
                     "evidence_char_end": ev_end,
+                    "evidence_global_start": ev_start,
+                    "evidence_global_end": ev_end,
                     "clause_polarity": clause_polarity.value,
                     "has_signal": bool(has_signal),
                     "axis_family_effective": fam,
@@ -986,6 +1127,7 @@ def extract_constraints(
     clauses: Iterable[Tuple[int, str]],
     *,
     clause_polarities: Optional[Dict[int, Polarity]] = None,
+    blocked_lemmas: Optional[set[str]] = None,
     nlp: Language,
     mapper_model: str = "all-MiniLM-L6-v2",
     mapper_threshold: float = 0.35,
@@ -1000,6 +1142,7 @@ def extract_constraints(
                 doc,
                 clause_id=cid,
                 clause_polarity=pol,
+                blocked_lemmas=blocked_lemmas,
                 mapper_model=mapper_model,
                 mapper_threshold=mapper_threshold,
                 mapper_min_margin=mapper_min_margin,

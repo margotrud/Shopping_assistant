@@ -13,12 +13,13 @@ from Shopping_assistant.nlp.axes.predictor import predict_axis
 from Shopping_assistant.nlp.parsing.clauses import ClauseChunk
 from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_for_mentions
 from Shopping_assistant.nlp.runtime.lexicon import ColorLexicon
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.utils.optional_deps import require
-
 
 # ---------------------------------------------------------------------------
 # Public typed outputs
 # ---------------------------------------------------------------------------
+
 
 class LikeItem(TypedDict, total=False):
     family: str
@@ -58,6 +59,7 @@ class Mention(TypedDict, total=False):
 # Debug
 # ---------------------------------------------------------------------------
 
+
 def _debug_enabled() -> bool:
     return os.environ.get("SA_COLOR_DEBUG", "").strip() in {"1", "true", "True", "YES", "yes"}
 
@@ -74,9 +76,48 @@ def _dbg(msg: str, **kv: Any) -> None:
     print("[COLORDBG]", " ".join(parts))
 
 
+def _pred_dbg(pred: Any) -> Dict[str, Any]:
+    """
+    Does:
+        Normalize AxisPred debug fields across call sites.
+        Uses confidence/margin + meta['source'] (never 'score'/'source' attributes).
+    """
+    try:
+        meta = getattr(pred, "meta", None) or {}
+    except Exception:
+        meta = {}
+
+    try:
+        axis = getattr(pred, "axis", None)
+    except Exception:
+        axis = None
+
+    try:
+        conf = getattr(pred, "confidence", None)
+    except Exception:
+        conf = None
+
+    try:
+        margin = getattr(pred, "margin", None)
+    except Exception:
+        margin = None
+
+    src = None
+    if isinstance(meta, dict):
+        src = meta.get("source")
+
+    return {
+        "axis": axis,
+        "confidence": conf,
+        "margin": margin,
+        "source": src,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Normalization helpers
 # ---------------------------------------------------------------------------
+
 
 def _norm(s: str) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in s).split())
@@ -120,6 +161,7 @@ def _build_xkcd_single_token_allowset(*, css_aliases: set[str], xkcd_aliases: se
 # ---------------------------------------------------------------------------
 # Hex -> hue / Lab helpers
 # ---------------------------------------------------------------------------
+
 
 def _hex_to_rgb01(hx: str) -> Optional[Tuple[float, float, float]]:
     if not isinstance(hx, str):
@@ -184,6 +226,7 @@ def _lab_hue_deg_from_ab(a: float, b: float) -> float:
 # World alias index (CSS + XKCD)
 # ---------------------------------------------------------------------------
 
+
 def _iter_css_color_names() -> Iterable[str]:
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color name inventory")
     if hasattr(webcolors, "names"):
@@ -221,6 +264,11 @@ def _norm_alias(s: str) -> str:
 
 @lru_cache(maxsize=2)
 def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str, Any]]:
+    """
+    Does:
+        Build and cache a normalized alias->color-info index for CSS (+ optional XKCD).
+        Cached across calls to eliminate first-call 10s+ rebuilds in interpret_nlp().
+    """
     webcolors = require("webcolors", extra="webcolors", purpose="CSS color inventory")
     idx: Dict[str, Dict[str, Any]] = {}
 
@@ -310,6 +358,7 @@ def _safe_float(x: Any) -> Optional[float]:
 # Lexicon resolve (controlled semantic)
 # ---------------------------------------------------------------------------
 
+
 @lru_cache(maxsize=1)
 def _color_lexicon() -> Optional[ColorLexicon]:
     try:
@@ -369,17 +418,22 @@ def _lexicon_resolve(cand: str, *, allow_semantic: bool) -> Optional[Dict[str, A
 # spaCy
 # ---------------------------------------------------------------------------
 
+
 @lru_cache(maxsize=1)
 def _stop_words_en() -> set[str]:
     spacy = require("spacy", extra="spacy", purpose="STOP_WORDS for mention/style extraction.")
-    return set(spacy.lang.en.stop_words.STOP_WORDS)
+    try:
+        nlp = load_spacy("en_core_web_sm")
+    except Exception:
+        nlp = spacy.blank("en")
+    return set(getattr(nlp.Defaults, "stop_words", set()))
 
 
 @lru_cache(maxsize=1)
 def _spacy_nlp_en():
     spacy = require("spacy", extra="spacy", purpose="spaCy for mention extraction.")
     try:
-        return spacy.load("en_core_web_sm")
+        return load_spacy("en_core_web_sm")
     except Exception:
         return spacy.blank("en")
 
@@ -420,6 +474,7 @@ def _nude_info_if_applicable(cand: str) -> Optional[Dict[str, Any]]:
 # Mention extraction
 # ---------------------------------------------------------------------------
 
+
 def extract_mentions_free(
     doc_text: str,
     color_index: Dict[str, Dict[str, Any]],
@@ -444,15 +499,23 @@ def extract_mentions_free(
             matched: Optional[Mention] = None
             for n in range(min(max_n, len(toks) - i), 0, -1):
                 span = toks[i : i + n]
-                if not span:
-                    continue
 
-                if span[0] == "not" and len(span) >= 2:
-                    cand = span[-1]
-                    if cand in stop_words:
-                        continue
+                if span and span[0] == "not" and len(span) >= 2:
+                    # keep existing behavior: "not X" -> "X"
+                    cand_span = [span[-1]]
+                    trimmed_left = len(span) - 1
                 else:
-                    cand = " ".join(span)
+                    cand_span = span
+                    orig_len = len(cand_span)
+                    while cand_span and cand_span[0] in stop_words:
+                        cand_span = cand_span[1:]
+                    trimmed_left = orig_len - len(cand_span)
+
+                    if not cand_span:
+                        continue
+
+                cand_len = len(cand_span)
+                cand = " ".join(cand_span)
 
                 head = cand.split()[-1]
                 if head in stop_words:
@@ -474,20 +537,21 @@ def extract_mentions_free(
                     if pred0.axis is not None:
                         continue
 
-                if info is None and " " not in cand:
-                    if not (head.endswith("y") or head.endswith("ish") or head == "nude"):
-                        continue
-
+                # Lookup in color_index FIRST.
                 if info is None:
                     info = color_index.get(cand)
                     src = "world_exact" if info else None
+
+                if not info and " " not in cand:
+                    if not (head.endswith("y") or head.endswith("ish") or head == "nude"):
+                        continue
 
                 if info:
                     _dbg("world_exact_hit", cand=cand, name=info.get("name"), hx=info.get("hex"))
 
                 if not info:
                     allow_sem = (" " in cand)
-                    _dbg("call_lexicon", cand=cand, allow_sem=allow_sem)
+                    _dbg("call_lexicon", cand=cand, allow_semantic=allow_sem)
                     info = _lexicon_resolve(cand, allow_semantic=allow_sem)
                     src = "lexicon" if info else None
 
@@ -497,8 +561,8 @@ def extract_mentions_free(
                 matched = {
                     "alias": cand if src != "hardcode" else head,
                     "name": str(info.get("name") or cand),
-                    "tok_start": i,
-                    "tok_len": n if src != "hardcode" else 1,
+                    "tok_start": i + trimmed_left,
+                    "tok_len": cand_len if src != "hardcode" else 1,
                 }
 
                 hx = info.get("hex")
@@ -541,7 +605,16 @@ def extract_mentions_free(
 
     # spaCy-driven extraction
     FUNCTIONAL_POS = {
-        "VERB", "AUX", "DET", "ADP", "PRON", "PART", "SCONJ", "CCONJ", "PUNCT", "SPACE"
+        "VERB",
+        "AUX",
+        "DET",
+        "ADP",
+        "PRON",
+        "PART",
+        "SCONJ",
+        "CCONJ",
+        "PUNCT",
+        "SPACE",
     }
     COLORLIKE_POS = {"ADJ", "NOUN", "PROPN"}
 
@@ -558,12 +631,7 @@ def extract_mentions_free(
         k = 0
         while k < len(ts):
             t = ts[k]
-            if (
-                t.is_space
-                or t.is_punct
-                or t.is_stop
-                or t.pos_ in {"DET", "ADP", "PRON", "PART"}
-            ):
+            if t.is_space or t.is_punct or t.is_stop or t.pos_ in {"DET", "ADP", "PRON", "PART"}:
                 k += 1
                 continue
             break
@@ -591,9 +659,6 @@ def extract_mentions_free(
     def _span_is_eligible(ts: List[Any]) -> bool:
         if not ts:
             return False
-        for t in ts:
-            if t.pos_ in {"VERB", "AUX"}:
-                return False
 
         head = _head_color_token(ts)
         if head is None:
@@ -606,16 +671,30 @@ def extract_mentions_free(
             return False
         return True
 
+    def _span_has_coordination(ts: List[Any]) -> bool:
+        for t in ts:
+            if getattr(t, "pos_", None) == "CCONJ":
+                return True
+            if getattr(t, "dep_", None) in {"cc", "conj"}:
+                return True
+        return False
+
     def _has_axis_like_prefix(ts: List[Any]) -> bool:
         head = _head_color_token(ts)
         if head is None:
             return False
+
         for t in ts:
             if t.i == head.i:
                 continue
             if t.is_stop or not t.is_alpha:
                 continue
-            pred = predict_axis(str(t.lemma_ or t.text), debug=False)
+
+            t_txt = _norm(getattr(t, "text", "") or "")
+            if t_txt and t_txt in color_index:
+                continue
+
+            pred = predict_axis(str(getattr(t, "lemma_", None) or t.text), debug=False)
             if pred.axis is not None:
                 return True
         return False
@@ -737,7 +816,6 @@ def extract_mentions_free(
                     i = matched["tok_start"] + matched["tok_len"]
                     break
 
-            # PRODUCT HEAD HANDLING: accept amod + compound as mods (no per-word hardcode)
             if _product_base_form(head_txt) in PRODUCT_BASES:
                 if _debug_enabled():
                     _dbg(
@@ -745,17 +823,22 @@ def extract_mentions_free(
                         head=head.text,
                         head_i=int(head.i),
                         head_dep=getattr(head, "dep_", None),
-                        head_children=[(c.text, getattr(c, "dep_", None), getattr(c, "pos_", None), int(c.i)) for c in head.children],
+                        head_children=[
+                            (c.text, getattr(c, "dep_", None), getattr(c, "pos_", None), int(c.i)) for c in head.children
+                        ],
                         span=[(t.text, getattr(t, "dep_", None), getattr(t, "pos_", None), int(t.i)) for t in ts],
                     )
 
                 mods = [
-                    t for t in ts
-                    if getattr(t, "dep_", "") in {"amod", "compound"}
-                    and t.is_alpha
-                    and not t.is_stop
+                    t
+                    for t in ts
+                    if getattr(t, "dep_", "") in {"amod", "compound"} and t.is_alpha and not t.is_stop
                 ]
-                _dbg("product_mods_extracted", head=head.text, mods=[(m.text, getattr(m, "dep_", None), getattr(m, "pos_", None)) for m in mods])
+                _dbg(
+                    "product_mods_extracted",
+                    head=head.text,
+                    mods=[(m.text, getattr(m, "dep_", None), getattr(m, "pos_", None)) for m in mods],
+                )
 
                 if not mods:
                     _dbg("skip_product_no_mods", cand=cand, head=head_txt, span=[t.text for t in ts])
@@ -772,19 +855,15 @@ def extract_mentions_free(
                         found = (m, "nude", nude_info, "hardcode_mod")
                         break
 
-                    predm = predict_axis(m_cand, debug=False)
-                    _dbg(
-                        "axis_pred_mod",
-                        cand=m_cand,
-                        axis=getattr(predm, "axis", None),
-                        score=getattr(predm, "score", None),
-                        source=getattr(predm, "source", None),
-                    )
+                    info_m = color_index.get(m_cand)
+                    if info_m:
+                        found = (m, m_cand, info_m, "world_mod")
+                        break
+
+                    predm = predict_axis(m_cand)
                     if predm.axis is not None:
-                        _dbg("skip_axis_single", cand=m_cand, head=m_cand, axis=predm.axis)
                         continue
 
-                    info_m = color_index.get(m_cand)
                     src_m = "world_mod" if info_m else None
                     if info_m:
                         _dbg("world_exact_hit_mod", cand=m_cand, name=info_m.get("name"), hx=info_m.get("hex"))
@@ -816,35 +895,35 @@ def extract_mentions_free(
                 i = matched["tok_start"] + matched["tok_len"]
                 break
 
-            # ------------------------------------------------------------
-            # SINGLE TOKEN GATING (NON-HARDCODED):
-            # axis filter MUST run BEFORE accepting world_exact singletons
-            # ------------------------------------------------------------
             info = None
             src = None
 
-            if " " not in cand:
-                pred0 = predict_axis(head_txt, debug=False)
-                _dbg(
-                    "axis_pred_single",
-                    cand=cand,
-                    head=head_txt,
-                    pos=getattr(head, "pos_", None),
-                    axis=getattr(pred0, "axis", None),
-                    score=getattr(pred0, "score", None),
-                    source=getattr(pred0, "source", None),
-                )
-                if pred0.axis is not None:
-                    _dbg("skip_axis_single", cand=cand, head=head_txt, axis=pred0.axis)
-                    continue
-
-            # world exact (single or multi) AFTER axis filter
             info = color_index.get(cand)
             src = "world_exact" if info else None
             if info:
                 _dbg("world_exact_hit", cand=cand, name=info.get("name"), hx=info.get("hex"))
 
-            # generic ADJ/ADV guard only when NOT found in world exact
+            if not info and any(getattr(t, "pos_", None) in {"VERB", "AUX"} for t in ts):
+                _dbg("skip_verb_span_no_world", cand=cand, span=[t.text for t in ts])
+                continue
+
+            if not info and " " not in cand:
+                pred0 = predict_axis(head_txt, debug=False)
+                pd0 = _pred_dbg(pred0)
+                _dbg(
+                    "axis_pred_single",
+                    cand=cand,
+                    head=head_txt,
+                    pos=getattr(head, "pos_", None),
+                    axis=pd0["axis"],
+                    confidence=pd0["confidence"],
+                    margin=pd0["margin"],
+                    source=pd0["source"],
+                )
+                if pred0.axis is not None:
+                    _dbg("skip_axis_single", cand=cand, head=head_txt, axis=pred0.axis)
+                    continue
+
             if not info and " " not in cand:
                 if head.pos_ in {"ADJ", "ADV"} and not (cand.endswith("y") or cand.endswith("ish")):
                     _dbg("skip_generic_adj_single", cand=cand, head=head.text, pos=head.pos_)
@@ -859,7 +938,7 @@ def extract_mentions_free(
             if not info:
                 continue
 
-            if len(ts) >= 2 and _has_axis_like_prefix(ts):
+            if len(ts) >= 2 and _has_axis_like_prefix(ts) and not _span_has_coordination(ts):
                 cand_head = _norm(head.text)
                 info2 = color_index.get(cand_head)
                 src2 = "world_head" if info2 else None
@@ -923,6 +1002,7 @@ def extract_mentions_free(
 # ---------------------------------------------------------------------------
 # Style extraction (unchanged)
 # ---------------------------------------------------------------------------
+
 
 def _extract_style_intents_from_chunks(chunks: List[ClauseChunk], color_index: Dict[str, Dict[str, Any]]) -> List[StyleIntent]:
     stop_words = _stop_words_en()

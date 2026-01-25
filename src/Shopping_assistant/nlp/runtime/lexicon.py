@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from Shopping_assistant.utils.optional_deps import require  # NEW (dynamic stopwords, not hardcoded denylist)
+from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy  # NEW: single spaCy loader
 
 SPACE_RE = re.compile(r"\s+")
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -44,10 +45,16 @@ def _norm_hex(x: str) -> Optional[str]:
 @lru_cache(maxsize=1)
 def _stop_words_en() -> set[str]:
     """
-    Dynamic guardrail: rely on spaCy STOP_WORDS instead of a hardcoded denylist.
+    Does:
+        Return spaCy English stopwords (cached) via the project spaCy runtime loader.
     """
-    spacy = require("spacy", extra="spacy", purpose="STOP_WORDS for color lexicon guardrails.")
-    return set(spacy.lang.en.stop_words.STOP_WORDS)
+    try:
+        nlp = load_spacy("en_core_web_sm")
+        return set(getattr(nlp.Defaults, "stop_words", set()))
+    except Exception:
+        # safe fallback: keep old behavior if spaCy model isn't available
+        spacy = require("spacy", extra="spacy", purpose="STOP_WORDS fallback for color lexicon guardrails.")
+        return set(spacy.lang.en.stop_words.STOP_WORDS)
 
 
 def _token_variants(t: str) -> List[str]:
@@ -64,19 +71,15 @@ def _token_variants(t: str) -> List[str]:
         return []
     out = [t]
 
-    # reddish -> red, brownish -> brown
     if len(t) >= 5 and t.endswith("ish"):
         out.append(t[:-3])
 
-    # peachy -> peach (BUT: berry -> berr is NOT a valid base; derive guard prevents materialization)
     if len(t) >= 4 and t.endswith("y"):
         out.append(t[:-1])
 
-    # plural-s noise for color tokens (rare but cheap)
     if len(t) >= 4 and t.endswith("s"):
         out.append(t[:-1])
 
-    # keep order, unique
     seen = set()
     uniq: List[str] = []
     for x in out:
@@ -109,7 +112,6 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
             if v in existing:
                 continue
 
-            # hard safety: never materialize y-stripped base (don't create new base from "...y")
             if k.endswith("y") and v == k[:-1]:
                 continue
 
@@ -143,7 +145,6 @@ def _prefer_variant(token: str, index: Dict[str, Dict[str, Any]]) -> str:
     if not present:
         return vars_[0] if vars_ else t
 
-    # Prefer: not-original first, then shorter (base form tends to be shorter)
     present.sort(key=lambda v: (v == t, len(v)))
     return present[0]
 
@@ -156,7 +157,6 @@ def _fuzzy_ratio(a: str, b: str) -> float:
 # Semantic resolution helpers
 # -----------------------------
 def _project_root() -> Path:
-    # pythonProject/src/Shopping_assistant/nlp/runtime/lexicon.py -> pythonProject
     return Path(__file__).resolve().parents[4]
 
 
@@ -169,9 +169,7 @@ def _safe_model_id(model_name: str) -> str:
 
 
 def _default_semantic_model() -> str:
-    return os.environ.get(
-        "SA_COLOR_SEMANTIC_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-    )
+    return os.environ.get("SA_COLOR_SEMANTIC_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 
 @lru_cache(maxsize=2)
@@ -216,7 +214,7 @@ def _semantic_topk(
     q_emb = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
     q_emb = np.asarray(q_emb, dtype=np.float32)[0]
 
-    sims = key_emb @ q_emb  # cosine (embeddings are normalized)
+    sims = key_emb @ q_emb
     k = max(1, int(topk))
 
     if k >= len(keys):
@@ -253,7 +251,6 @@ class ColorLexicon:
 
     @staticmethod
     def default_path() -> Path:
-        # pythonProject/src/Shopping_assistant/nlp/runtime/lexicon.py -> pythonProject
         root = Path(__file__).resolve().parents[4]
         return root / "data" / "nlp" / "color_lexicon.json"
 
@@ -299,11 +296,6 @@ class ColorLexicon:
 
         Returns:
           List[ResolvedColor] with attribute access (.hex, .name, ...).
-
-        Notes:
-          - fuzzy matching uses SequenceMatcher as a cheap runtime fallback.
-          - semantic fallback (sentence-transformers) is optional and cached.
-          - semantic is guarded to avoid resolving constraints / multi-token phrases.
         """
         use_sem = bool(use_semantic)
 
@@ -311,11 +303,10 @@ class ColorLexicon:
         if not q:
             return []
 
-        # Dynamic guardrail: reject stopwords (prevents sure->surf, etc.)
         if q in _stop_words_en():
             return []
 
-        # Dynamic guardrail: reject axis-like tokens (prevents bright->bright red, etc.)
+        # Axis guardrail (prevents bright/deep/etc resolving as colors)
         try:
             from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
             pred = predict_axis(q, debug=False)
@@ -336,7 +327,6 @@ class ColorLexicon:
                 )
             ][: max(1, int(topk))]
 
-        # single-token variant preference
         if " " not in q:
             k2 = _prefer_variant(q, self.raw_index)
             if k2 and k2 != q:
@@ -357,11 +347,9 @@ class ColorLexicon:
         # -----------------------------
         single = (" " not in q)
 
-        # 1) disable fuzzy for short single tokens (avoids sure->surf, loud->cloud, lip->lilac)
         min_len = int(os.environ.get("SA_COLOR_FUZZY_SINGLE_MIN_LEN", "6"))
         use_fuzzy = not (single and len(q) < min_len)
 
-        # 2) stronger cutoff for single-token fuzzy
         cutoff = float(fuzzy_cutoff)
         if single:
             cutoff = float(os.environ.get("SA_COLOR_FUZZY_CUTOFF_SINGLE", "92.0"))
@@ -371,10 +359,8 @@ class ColorLexicon:
             best_s = 0.0
 
             for k in self.raw_index.keys():
-                # Never match single-token -> multi-token via fuzzy (bright->bright red)
                 if single and " " in k:
                     continue
-
                 if single and abs(len(k) - len(q)) > 6:
                     continue
 
@@ -395,13 +381,11 @@ class ColorLexicon:
                     )
                 ][: max(1, int(topk))]
 
-        # semantic fallback (keep existing guardrails; still dynamic)
+        # semantic fallback
         if use_sem:
-            # 1) Never semantic-resolve multi-token phrases (constraints, style, negations, etc.)
             if " " in q:
                 return []
 
-            # 2) Never semantic-resolve tokens that look like axis labels
             try:
                 from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
                 pred = predict_axis(q, debug=False)
@@ -418,7 +402,6 @@ class ColorLexicon:
                 if not cand:
                     return []
 
-                # Require strong top-1 similarity to accept semantic resolution
                 top1_min = float(os.environ.get("SA_COLOR_SEMANTIC_TOP1_MIN", "0.62"))
                 _top1_k, top1_sim = cand[0]
                 if top1_sim < top1_min:
@@ -458,9 +441,7 @@ class ColorLexicon:
         while i < len(toks):
             matched: Optional[Dict[str, Any]] = None
 
-            token_cands = [
-                _token_variants(toks[j]) for j in range(i, min(len(toks), i + max_n))
-            ]
+            token_cands = [_token_variants(toks[j]) for j in range(i, min(len(toks), i + max_n))]
 
             for n in range(min(max_n, len(toks) - i), 0, -1):
                 parts: List[str] = []
@@ -486,7 +467,6 @@ class ColorLexicon:
                     i += n
                     break
 
-                # If not matched, allow variant substitution for the LAST token
                 if n == 1:
                     best = _prefer_variant(toks[i], self.raw_index)
                     info2 = self.raw_index.get(best)
@@ -525,7 +505,6 @@ class ColorLexicon:
             else:
                 i += 1
 
-        # De-dup by name
         seen = set()
         uniq: List[Dict[str, Any]] = []
         for h in hits:

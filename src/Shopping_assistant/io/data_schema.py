@@ -23,31 +23,10 @@ def validate_inventory(df: pd.DataFrame) -> None:
         ["shade_id", "product_id", "L_lab", "a_lab", "b_lab"],
         name="inventory",
     )
-    # cluster_id is optional at load time; may be injected from assignments
-    # but if present, must be non-null for most rows (checked elsewhere if needed)
-
-
-def validate_prototypes(df: pd.DataFrame) -> None:
-    _require_columns(
-        df,
-        ["cluster_id", "L_lab", "a_lab", "b_lab"],
-        name="prototypes",
-    )
-
-
-def validate_assignments(df: pd.DataFrame) -> None:
-    _require_columns(
-        df,
-        ["cluster_id"],
-        name="assignments",
-    )
-    if "shade_id" not in df.columns and not (("product_id" in df.columns) and ("shade_id" in df.columns)):
-        # practical requirement: must have at least shade_id to merge
-        raise DataSchemaError("assignments: expected at least 'shade_id' (and optionally 'product_id').")
 
 
 def validate_calibration(cal: dict) -> None:
-    # This must match what scoring.py actually uses
+    # Must match what scoring.py uses (cluster-free).
     required = ["deltaE_ref", "thresholds", "scale_iqr", "scale_std"]
     missing = [k for k in required if k not in cal]
     if missing:

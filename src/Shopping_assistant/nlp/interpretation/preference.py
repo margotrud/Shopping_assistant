@@ -6,7 +6,7 @@ from dataclasses import is_dataclass, replace
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
 
-from Shopping_assistant.nlp.axes.predictor import predict_axis
+from Shopping_assistant.nlp.axes.axis_family import resolve_axis_family
 from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
 from Shopping_assistant.nlp.parsing.clauses import ClauseSplitConfig, split_clauses
 from Shopping_assistant.nlp.parsing.constraints import extract_constraints_from_clause_text
@@ -18,6 +18,7 @@ from Shopping_assistant.nlp.parsing.polarity import (
 from Shopping_assistant.nlp.resolve import resolve_preference
 from Shopping_assistant.nlp.resolve.conflicts import resolve_symbolic_conflicts
 from Shopping_assistant.nlp.resolve.constraint_normalizer import normalize_constraints
+from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
 from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.nlp.schema import (
     Clause,
@@ -36,7 +37,6 @@ __all__ = [
     "build_preference_from_nlp",
 ]
 
-
 _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
     "split_pos": ["CCONJ", "SCONJ"],
     "split_dep": ["cc", "mark", "conj", "advcl", "ccomp", "xcomp", "acl", "relcl"],
@@ -46,6 +46,22 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
 }
 
 _TOKEN_SPLIT_RE = re.compile(r"[^\w]+")
+
+
+@lru_cache(maxsize=2)
+def _get_color_index(include_xkcd: bool) -> Dict[str, Dict[str, Any]]:
+    """
+    Does:
+        Build the alias index used for mention extraction: default lexicon first, optional CSS/XKCD additive only.
+    """
+    idx = dict(load_default_lexicon().raw_index)
+
+    if include_xkcd:
+        world = build_world_alias_index(include_xkcd=True)
+        for k, v in world.items():
+            idx.setdefault(k, v)
+
+    return idx
 
 
 def _to_polarity(x: Optional[str]) -> Polarity:
@@ -69,6 +85,10 @@ def _clause_global_offset(cl: Clause) -> int:
 
 
 def _mention_span_from_doc(doc: Any, tok_start: Any, tok_len: Any) -> Span:
+    """
+    Does:
+        Convert (tok_start, tok_len) into a local character span using the spaCy doc.
+    """
     if not isinstance(tok_start, int) or not isinstance(tok_len, int) or tok_len <= 0:
         return Span(0, 0)
     if tok_start < 0 or tok_start >= len(doc):
@@ -107,54 +127,32 @@ def _constraint_sort_key(c: Constraint) -> tuple:
     )
 
 
-def _normalize_model_name(model_name: str) -> str:
-    if "/" in (model_name or ""):
-        return model_name
-    return f"sentence-transformers/{model_name}"
+def _inject_axis_family(c: Constraint) -> Constraint:
+    """
+    Does:
+        Inject axis_family_effective into constraint.meta via resolve_axis_family().
+    """
+    meta = dict(c.meta or {})
+    family = resolve_axis_family({"axis": c.axis.value if c.axis else None, "meta": meta})
+    if family:
+        meta["axis_family_effective"] = family
+    return replace(c, meta=meta)
 
 
-@lru_cache(maxsize=8192)
-def _is_axis_like_token(
-    token: str,
-    *,
-    model_name: str,
-    min_sim: float,
-    min_margin: float,
-) -> bool:
-    t = (token or "").strip().lower()
-    if not t or len(t) <= 2:
-        return False
-
-    pred = predict_axis(
-        t,
-        model_name=_normalize_model_name(model_name),
-        min_sim=float(min_sim),
-        min_margin=float(min_margin),
-        debug=False,
-    )
-    return pred.axis is not None
-
-
-def _blocked_lemmas_from_mentions(
-    mention_names: List[str],
-    *,
-    axis_model: str,
-    axis_min_sim: float,
-    axis_min_margin: float,
-) -> Set[str]:
+def _blocked_lemmas_from_mention_dicts(mention_dicts: List[Dict[str, Any]]) -> Set[str]:
+    """
+    Does:
+        Build a token blocklist from extracted mentions (raw alias + canonical name).
+    """
     blocked: Set[str] = set()
-    for name in mention_names:
-        for tok in _TOKEN_SPLIT_RE.split((name or "").lower()):
-            if not tok:
-                continue
-            if _is_axis_like_token(
-                tok,
-                model_name=axis_model,
-                min_sim=axis_min_sim,
-                min_margin=axis_min_margin,
-            ):
-                continue
-            blocked.add(tok)
+    for m in mention_dicts:
+        if not isinstance(m, dict):
+            continue
+        for field in (m.get("alias"), m.get("name")):
+            s = (field or "")
+            for tok in _TOKEN_SPLIT_RE.split(str(s).lower()):
+                if tok:
+                    blocked.add(tok)
     return blocked
 
 
@@ -205,7 +203,7 @@ def interpret_nlp(
         debug=debug,
     )
 
-    color_index = build_world_alias_index(include_xkcd=include_xkcd)
+    color_index = _get_color_index(include_xkcd)
     pol_fn = make_free_polarity_fn()
 
     all_mentions: List[Mention] = []
@@ -251,6 +249,7 @@ def interpret_nlp(
         doc = nlp(clause_text)
 
         mention_dicts = extract_mentions_free(clause_text, color_index, doc=doc)
+
         mention_names = [
             str(m.get("name") or "").strip()
             for m in mention_dicts
@@ -259,11 +258,8 @@ def interpret_nlp(
         mention_names = [m for m in mention_names if m]
         mention_set = set(mention_names)
 
-        blocked_lemmas = _blocked_lemmas_from_mentions(
-            mention_names,
-            axis_model="all-MiniLM-L6-v2",
-            axis_min_sim=0.35,
-            axis_min_margin=0.08,
+        blocked_lemmas = _blocked_lemmas_from_mention_dicts(
+            [m for m in mention_dicts if isinstance(m, dict)]
         )
 
         pol_map = infer_polarity_for_mentions(
@@ -273,10 +269,7 @@ def interpret_nlp(
             elliptical_neg=cl.elliptical_neg,
         )
 
-        cl_polarity = decide_clause_polarity(
-            pol_map,
-            elliptical_neg=cl.elliptical_neg,
-        )
+        cl_polarity = decide_clause_polarity(pol_map, elliptical_neg=cl.elliptical_neg)
         clauses_out.append(replace(cl, polarity=cl_polarity))
 
         if debug and isinstance(trace, dict):
@@ -308,7 +301,14 @@ def interpret_nlp(
                 polarity=_to_polarity(pol_map.get(name) if name in mention_set else None),
                 clause_id=cl.clause_id,
                 confidence=float(m.get("confidence") or 1.0),
-                meta={"hue_deg": m.get("hue_deg"), "chunk": cl.meta.get("chunk")},
+                meta={
+                    "hex": m.get("hex"),
+                    "hue_deg": m.get("hue_deg"),
+                    "lab_L": m.get("lab_L"),
+                    "lab_a": m.get("lab_a"),
+                    "lab_b": m.get("lab_b"),
+                    "chunk": (cl.meta or {}).get("chunk") if isinstance(cl.meta, dict) else None,
+                },
             )
 
             if mention_obj.polarity == Polarity.UNKNOWN:
@@ -365,36 +365,37 @@ def interpret_nlp(
             diagnostics["mentions"].extend(
                 [
                     {
-                        "clause_id": m.clause_id,
-                        "canonical": m.canonical,
-                        "raw": m.raw,
-                        "polarity": m.polarity,
-                        "confidence": m.confidence,
-                        "span": {"start": m.span.start, "end": m.span.end},
-                        "meta": m.meta,
+                        "clause_id": m2.clause_id,
+                        "canonical": m2.canonical,
+                        "raw": m2.raw,
+                        "polarity": m2.polarity,
+                        "confidence": m2.confidence,
+                        "span": {"start": m2.span.start, "end": m2.span.end},
+                        "meta": m2.meta,
                     }
-                    for m in all_mentions
-                    if m.clause_id == cl.clause_id
+                    for m2 in all_mentions
+                    if m2.clause_id == cl.clause_id
                 ]
             )
             diagnostics["constraints"].extend(
                 [
                     {
-                        "clause_id": c.clause_id,
-                        "axis": c.axis,
-                        "direction": c.direction,
-                        "strength": c.strength,
-                        "evidence": c.evidence,
-                        "confidence": c.confidence,
-                        "scope": c.scope,
-                        "meta": c.meta,
+                        "clause_id": c3.clause_id,
+                        "axis": c3.axis,
+                        "direction": c3.direction,
+                        "strength": c3.strength,
+                        "evidence": c3.evidence,
+                        "confidence": c3.confidence,
+                        "scope": c3.scope,
+                        "meta": c3.meta,
                     }
-                    for c in all_constraints
-                    if c.clause_id == cl.clause_id
+                    for c3 in all_constraints
+                    if c3.clause_id == cl.clause_id
                 ]
             )
 
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
+    constraints_final = tuple(_inject_axis_family(c) for c in constraints_final)
     constraints_final = normalize_constraints(constraints_final, strict=debug)
 
     constraints_sorted = tuple(sorted(constraints_final, key=_constraint_sort_key))
@@ -402,28 +403,6 @@ def interpret_nlp(
 
     diagnostics = dict(diagnostics or {})
     diagnostics["conflicts"] = conflicts_diag
-
-    if debug and isinstance(diagnostics.get("mentions"), list):
-        diagnostics["mentions"] = sorted(
-            diagnostics["mentions"],
-            key=lambda d: (
-                d.get("clause_id", 0),
-                (d.get("span", {}) or {}).get("start", 10**9),
-                d.get("canonical", ""),
-                d.get("raw", ""),
-            ),
-        )
-    if debug and isinstance(diagnostics.get("constraints"), list):
-        diagnostics["constraints"] = sorted(
-            diagnostics["constraints"],
-            key=lambda d: (
-                d.get("clause_id", 0),
-                str(d.get("axis", "")),
-                str(d.get("direction", "")),
-                str(d.get("strength", "")),
-                (d.get("meta", {}) or {}).get("evidence_global_start", 10**9),
-            ),
-        )
 
     if debug and isinstance(trace, dict):
         trace["conflicts"] = conflicts_diag
@@ -435,7 +414,7 @@ def interpret_nlp(
                 "strength": c.strength.value,
                 "confidence": float(getattr(c, "confidence", 0.0) or 0.0),
                 "evidence": c.evidence,
-                "meta": c.meta,
+                "meta": {**(c.meta or {}), "axis_family_effective": (c.meta or {}).get("axis_family_effective")},
             }
             for c in constraints_sorted
         ]
