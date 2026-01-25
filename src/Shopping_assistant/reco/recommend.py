@@ -52,6 +52,14 @@ _MAX_POOL_TOPN = 2000
 _POOL_EXPAND_STEP = 400
 _MIN_FEASIBLE_MULT = 5  # min_candidates = max(50, _MIN_FEASIBLE_MULT * topk)
 
+# Hue-window pool policy (plain-color mode)
+_HUE_WINDOW_DEG_DENSE = 25.0
+_HUE_WINDOW_DEG_STEPS = (25.0, 35.0, 45.0, 60.0, 90.0)
+_DENSE_REQUIRED_MULT = 5  # dense if n_close_25deg >= _DENSE_REQUIRED_MULT * topk
+
+# Plain-color neutral center pull
+_CENTER_DE_LAMBDA = 0.15
+
 # Typical-color policy (DATA-DRIVEN, no hue windows)
 _TYPICAL_MIN_N = 30
 _TYPICAL_NEIGHBOR_M = 400
@@ -64,6 +72,9 @@ _CANONICAL_SIGMA_FLOOR = 3.0  # L* and C* are on similar-ish numeric scales here
 
 # Plain-color anchor pull (prevents "purple" -> mauve/berry)
 _PLAIN_COLOR_LAMBDA_PREFERENCE_MIN = 0.25
+# Plain-color: penalize global chroma extremes (prevents neon reds)
+_PLAIN_CHROMA_EXTREME_Q = 0.90
+_PLAIN_CHROMA_EXTREME_LAMBDA = 1.25
 
 # Columns we want to preserve in the returned df for explain/debug/UX
 _EXPLAIN_COLS = (
@@ -106,6 +117,15 @@ def _robust_center_and_scale(x: np.ndarray) -> tuple[float, float]:
     sigma = max(float(sigma), float(_CANONICAL_SIGMA_FLOOR))
     return med, sigma
 
+
+def _global_chroma_hi(inv: pd.DataFrame, q: float) -> Optional[float]:
+    df = _ensure_C_lab(inv)
+    if "C_lab" not in df.columns:
+        return None
+    vals = pd.to_numeric(df["C_lab"], errors="coerce").dropna()
+    if vals.empty:
+        return None
+    return float(vals.quantile(float(q)))
 
 def _ensure_C_lab(df: pd.DataFrame) -> pd.DataFrame:
     if "C_lab" in df.columns:
@@ -568,6 +588,123 @@ def _select_candidate_pool_distance_only(
     return out
 
 
+# ---------------------------------------------------------------------
+# Hue-window pool + neutral center (plain-color mode)
+# ---------------------------------------------------------------------
+
+
+def _delta_angle_deg(a1: np.ndarray, a0: float) -> np.ndarray:
+    d = (a1 - float(a0) + 180.0) % 360.0 - 180.0
+    return np.abs(d)
+
+
+def _lab_hue_angle_deg_from_ab(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return np.degrees(np.arctan2(b, a))
+
+
+def _anchor_hue_angle_deg(anchor_lab: Tuple[float, float, float]) -> float:
+    _, a0, b0 = anchor_lab
+    return float(np.degrees(np.arctan2(float(b0), float(a0))))
+
+
+def _pool_by_hue_window(
+    inv: pd.DataFrame,
+    *,
+    anchor_lab: Tuple[float, float, float],
+    angle_deg: float,
+) -> pd.DataFrame:
+    need = {"a_lab", "b_lab"}
+    if not need.issubset(inv.columns):
+        return inv
+
+    a = pd.to_numeric(inv["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(inv["b_lab"], errors="coerce").to_numpy(float)
+
+    th = _lab_hue_angle_deg_from_ab(a, b)
+    th0 = _anchor_hue_angle_deg(anchor_lab)
+
+    d = _delta_angle_deg(th, th0)
+    m = np.isfinite(d) & (d <= float(angle_deg))
+    return inv.loc[m].copy()
+
+
+def _choose_plain_color_pool(
+    inv: pd.DataFrame,
+    *,
+    anchor_lab: Tuple[float, float, float],
+    topk: int,
+    debug: bool,
+) -> tuple[pd.DataFrame, dict]:
+    min_pool = max(50, int(_MIN_FEASIBLE_MULT) * int(topk))
+
+    pool25 = _pool_by_hue_window(inv, anchor_lab=anchor_lab, angle_deg=float(_HUE_WINDOW_DEG_DENSE))
+    n_close_25 = int(len(pool25))
+    dense = n_close_25 >= int(_DENSE_REQUIRED_MULT) * int(topk)
+
+    chosen_angle = None
+    chosen_pool = None
+
+    if dense:
+        chosen_angle = float(_HUE_WINDOW_DEG_DENSE)
+        chosen_pool = pool25
+    else:
+        for ang in _HUE_WINDOW_DEG_STEPS:
+            p = _pool_by_hue_window(inv, anchor_lab=anchor_lab, angle_deg=float(ang))
+            if len(p) >= min_pool:
+                chosen_angle = float(ang)
+                chosen_pool = p
+                break
+        if chosen_pool is None:
+            chosen_angle = float(_HUE_WINDOW_DEG_STEPS[-1])
+            chosen_pool = _pool_by_hue_window(inv, anchor_lab=anchor_lab, angle_deg=chosen_angle)
+
+    meta = {
+        "min_pool": int(min_pool),
+        "n_close_25": int(n_close_25),
+        "dense": bool(dense),
+        "angle_deg": float(chosen_angle),
+        "pool_n": int(len(chosen_pool)),
+    }
+
+    if debug:
+        print("\n[Plain color pool]")
+        for k, v in meta.items():
+            print(f"  {k}={v}")
+
+    return chosen_pool, meta
+
+
+def _robust_center_lab(df_pool: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
+    need = {"L_lab", "a_lab", "b_lab"}
+    if not need.issubset(df_pool.columns):
+        return None
+
+    L = pd.to_numeric(df_pool["L_lab"], errors="coerce").to_numpy(float)
+    a = pd.to_numeric(df_pool["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(df_pool["b_lab"], errors="coerce").to_numpy(float)
+
+    ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b)
+    if ok.sum() < 10:
+        return None
+
+    return (float(np.median(L[ok])), float(np.median(a[ok])), float(np.median(b[ok])))
+
+
+def _deltaE76_to_center(df: pd.DataFrame, center_lab: Tuple[float, float, float]) -> pd.Series:
+    need = {"L_lab", "a_lab", "b_lab"}
+    if not need.issubset(df.columns):
+        return pd.Series(np.zeros(len(df)), index=df.index, dtype=float)
+
+    L = pd.to_numeric(df["L_lab"], errors="coerce").to_numpy(float)
+    a = pd.to_numeric(df["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(df["b_lab"], errors="coerce").to_numpy(float)
+
+    L0, a0, b0 = center_lab
+    d = np.sqrt((L - float(L0)) ** 2 + (a - float(a0)) ** 2 + (b - float(b0)) ** 2)
+    d = np.where(np.isfinite(d), d, np.inf)
+    return pd.Series(d, index=df.index, dtype=float)
+
+
 def _count_feasible_rows(df: pd.DataFrame, *, constraints: tuple[Constraint, ...], calibration: dict) -> int:
     if df.empty or (not constraints):
         return int(len(df))
@@ -644,37 +781,44 @@ def recommend_from_text(
 
     is_neutral_only = _is_neutral_regularizer_only(cons)
 
+    # Plain-color mode definition (SINGLE source of truth)
+    plain_color_mode = bool(has_color) and (not _has_effective_thresholds(ths)) and ((not cons) or is_neutral_only)
+
     inv = assets.inventory.copy()
-    pool_topn = int(min(max(int(candidate_pool_topn), 1), len(inv)))
 
-    df_pool = _select_candidate_pool_distance_only(
-        inv,
-        anchor_lab=anchor_lab,
-        has_color=bool(has_color),
-        pool_topn=pool_topn,
-    )
+    # STEP A: pool selection
+    if plain_color_mode and has_color and (anchor_lab is not None):
+        df_pool, _pool_meta = _choose_plain_color_pool(inv, anchor_lab=anchor_lab, topk=int(topk), debug=bool(debug))
+    else:
+        pool_topn = int(min(max(int(candidate_pool_topn), 1), len(inv)))
+        df_pool = _select_candidate_pool_distance_only(
+            inv,
+            anchor_lab=anchor_lab,
+            has_color=bool(has_color),
+            pool_topn=pool_topn,
+        )
 
-    if cons and (not is_neutral_only) and (not brightness_only) and has_color and (anchor_lab is not None):
-        min_candidates = max(50, int(_MIN_FEASIBLE_MULT) * int(topk))
-        feasible_n = _count_feasible_rows(df_pool, constraints=cons, calibration=assets.calibration)
-
-        if debug:
-            print("\n[Pool feasibility]")
-            print(f"  pool_topn={len(df_pool)}  feasible_n={feasible_n}  target_min={min_candidates}")
-
-        cur_topn = int(len(df_pool))
-        while feasible_n < min_candidates and cur_topn < min(int(_MAX_POOL_TOPN), len(inv)):
-            cur_topn = min(cur_topn + int(_POOL_EXPAND_STEP), int(_MAX_POOL_TOPN), len(inv))
-            df_pool = _select_candidate_pool_distance_only(
-                inv,
-                anchor_lab=anchor_lab,
-                has_color=True,
-                pool_topn=cur_topn,
-            )
+        if cons and (not is_neutral_only) and (not brightness_only) and has_color and (anchor_lab is not None):
+            min_candidates = max(50, int(_MIN_FEASIBLE_MULT) * int(topk))
             feasible_n = _count_feasible_rows(df_pool, constraints=cons, calibration=assets.calibration)
 
             if debug:
-                print(f"  expanded_pool_topn={len(df_pool)}  feasible_n={feasible_n}")
+                print("\n[Pool feasibility]")
+                print(f"  pool_topn={len(df_pool)}  feasible_n={feasible_n}  target_min={min_candidates}")
+
+            cur_topn = int(len(df_pool))
+            while feasible_n < min_candidates and cur_topn < min(int(_MAX_POOL_TOPN), len(inv)):
+                cur_topn = min(cur_topn + int(_POOL_EXPAND_STEP), int(_MAX_POOL_TOPN), len(inv))
+                df_pool = _select_candidate_pool_distance_only(
+                    inv,
+                    anchor_lab=anchor_lab,
+                    has_color=True,
+                    pool_topn=cur_topn,
+                )
+                feasible_n = _count_feasible_rows(df_pool, constraints=cons, calibration=assets.calibration)
+
+                if debug:
+                    print(f"  expanded_pool_topn={len(df_pool)}  feasible_n={feasible_n}")
 
     if debug:
         print("\n[NLP constraints_final]")
@@ -712,9 +856,6 @@ def recommend_from_text(
     if injected_neutral and is_neutral_only:
         lambda_constraints_eff = min(lambda_constraints_eff, float(_NEUTRAL_LAMBDA_MAX))
 
-    # Plain-color mode: small preference pull to keep the requested hue family
-    plain_color_mode = bool(has_color) and (not _has_effective_thresholds(ths)) and ((not cons) or is_neutral_only)
-
     # score_shades contract: if preference_weights is None => lambda_preference MUST be 0
     preference_weights = getattr(assets, "preference_weights", None)
     lambda_preference_eff = float(lambda_preference)
@@ -748,7 +889,29 @@ def recommend_from_text(
     scored = _restore_explain_cols(df_pool, scored, explain_cols=tuple(_EXPLAIN_COLS))
     scored = _standardize_output_columns(scored)
 
-    apply_canonical = bool(has_color) and (not _has_effective_thresholds(ths)) and ((not cons) or is_neutral_only)
+    # Plain-color: hard guard against globally over-saturated shades (esp. reds)
+    if plain_color_mode and (scored is not None) and (not scored.empty) and ("score_total" in scored.columns):
+        hi = _global_chroma_hi(inv, _PLAIN_CHROMA_EXTREME_Q)
+        if hi is not None:
+            scored = _ensure_C_lab(scored)
+            c = pd.to_numeric(scored["C_lab"], errors="coerce").fillna(0.0)
+            over = np.maximum(0.0, c - float(hi))
+            scored["_chroma_over_hi"] = over
+            scored["score_total"] = pd.to_numeric(scored["score_total"], errors="coerce").fillna(0.0) - float(
+                _PLAIN_CHROMA_EXTREME_LAMBDA
+            ) * over
+
+    # STEP B: neutral target = robust center of the (clean) pool
+    if plain_color_mode and (scored is not None) and (not scored.empty) and ("score_total" in scored.columns):
+        center_lab = _robust_center_lab(df_pool)
+        if center_lab is not None:
+            dE = _deltaE76_to_center(scored, center_lab)
+            scored["_dE_center"] = dE
+            scored["score_total"] = pd.to_numeric(scored["score_total"], errors="coerce").fillna(0.0) - float(
+                _CENTER_DE_LAMBDA
+            ) * dE
+
+    apply_canonical = plain_color_mode
     if apply_canonical and (scored is not None) and (not scored.empty) and ("score_total" in scored.columns):
         pen = _canonical_penalty(scored)
         scored["_canonical_penalty"] = pen
@@ -757,9 +920,7 @@ def recommend_from_text(
             float(_CANONICAL_LAMBDA) * scored["_score_canonical"]
         )
 
-    # --- CRITICAL FIX ---
     # Typical-color rerank must ONLY run for plain/neutral color queries.
-    # It must NOT override explicit axis intents (bright/dark/deep/muted/...).
     apply_typical = bool(seed_hex) and bool(has_color) and bool(plain_color_mode)
 
     if apply_typical:
