@@ -5,6 +5,7 @@ import base64
 import colorsys
 import html
 import io
+import os
 import re
 import sys
 import textwrap
@@ -20,9 +21,6 @@ import streamlit as st
 # -----------------------------
 st.set_page_config(page_title="Playground", layout="wide", initial_sidebar_state="collapsed")
 
-from ui.theme import inject_styles
-from ui.nav import top_nav
-
 # Fix noisy Streamlit+torch watcher crash (log spam / occasional UI weirdness)
 try:
     st.set_option("server.fileWatcherType", "none")
@@ -37,21 +35,9 @@ SRC = ROOT / "src"
 if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# -----------------------------
-# Bootstrap (NLP warmup): ensure this page warms up even if Home not visited
-# -----------------------------
-@st.cache_resource(show_spinner=False)
-def _warmup_nlp() -> Any:
-    """
-    Does:
-        Warm up spaCy once per Streamlit process to avoid first-query freeze.
-    """
-    from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy  # type: ignore
-
-    return load_spacy("en_core_web_sm")
-
-
-_ = _warmup_nlp()
+from ui.theme import inject_styles
+from ui.nav import top_nav
+from ui.bootstrap import warmup_nlp_stack  # ✅ single source of truth
 
 # -----------------------------
 # Accent color (sync with Home.py)
@@ -226,7 +212,7 @@ st.markdown(
           margin: 10px 0 10px 2px;
         }}
 
-        /* ✅ force equal-height cards inside Streamlit columns */
+        /* force equal-height cards inside Streamlit columns */
         div[data-testid="column"] > div {{
           height: 100%;
         }}
@@ -241,8 +227,8 @@ st.markdown(
 
         .luxe-card {{
           height: 100%;
-          min-height: 510px;            /* ✅ uniform height target */
-          display: flex;               /* ✅ make internals stretch */
+          min-height: 510px;
+          display: flex;
           flex-direction: column;
           border: 1px solid var(--border);
           background: var(--card);
@@ -276,9 +262,9 @@ st.markdown(
 
         .luxe-body {{
           padding: 14px 16px 14px 16px;
-          display: flex;              /* ✅ vertical layout */
+          display: flex;
           flex-direction: column;
-          flex: 1 1 auto;             /* ✅ fill remaining height */
+          flex: 1 1 auto;
         }}
 
         .luxe-brand {{
@@ -319,7 +305,7 @@ st.markdown(
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          margin-top: auto;           /* ✅ push chips to bottom */
+          margin-top: auto;
         }}
         .chip {{
           display: inline-flex;
@@ -368,30 +354,45 @@ st.markdown(
 )
 
 
-@st.cache_resource(show_spinner=False)
-def _assets() -> Any:
-    from Shopping_assistant.io.assets import load_assets  # type: ignore
-    from Shopping_assistant.color import scoring as color_scoring  # type: ignore
-
-    return load_assets(
-        enriched_csv=color_scoring._default_enriched_for_scripts_only(),
-        prototypes_csv=color_scoring._default_prototypes_for_scripts_only(),
-        assignments_csv=color_scoring._default_assignments_for_scripts_only(),
-        calibration_json=color_scoring._default_calibration_for_scripts_only(),
-    )
-
-
-@st.cache_resource(show_spinner=False)
-def _warmup_models() -> None:
+def _maybe_set_default_env_paths() -> None:
     """
     Does:
-        Pre-warm polarity fn + CSS/XKCD index once per process (UX only).
+        Set SA_* asset env vars once per session if missing, using repo-relative defaults.
     """
-    from Shopping_assistant.nlp.parsing.polarity import make_free_polarity_fn  # type: ignore
-    from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
+    root = Path(os.environ.get("SA_ASSETS_ROOT", "data")).resolve()
 
-    make_free_polarity_fn()
-    build_world_alias_index(include_xkcd=True)
+    enriched_default = root / "enriched_data" / "Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv"
+    calib_default = root / "models" / "color_scoring_calibration.json"
+
+    if not os.environ.get("SA_ENRICHED_CSV_PATH") and enriched_default.exists():
+        os.environ["SA_ENRICHED_CSV_PATH"] = str(enriched_default)
+    if not os.environ.get("SA_CALIBRATION_JSON_PATH") and calib_default.exists():
+        os.environ["SA_CALIBRATION_JSON_PATH"] = str(calib_default)
+
+
+@st.cache_resource(show_spinner=False)
+def _assets() -> Any:
+    """
+    Does:
+        Load assets from env vars or default repo paths (no cluster prototypes/assignments).
+    """
+    from Shopping_assistant.io.assets import load_assets  # type: ignore
+
+    _maybe_set_default_env_paths()
+
+    enriched = os.environ.get("SA_ENRICHED_CSV_PATH")
+    calib = os.environ.get("SA_CALIBRATION_JSON_PATH")
+
+    if enriched and calib:
+        # IMPORTANT: load_assets expects Path-like objects (not str)
+        return load_assets(enriched_csv=Path(enriched), calibration_json=Path(calib))
+
+    raise FileNotFoundError(
+        "Missing assets. Provide either:\n"
+        "- SA_ENRICHED_CSV_PATH and SA_CALIBRATION_JSON_PATH env vars, or\n"
+        "- files at data/enriched_data/Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv "
+        "and data/models/color_scoring_calibration.json"
+    )
 
 
 def _pick_first(row: pd.Series, cols: list[str]) -> str:
@@ -830,13 +831,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.spinner("Loading models…"):
-    try:
-        _warmup_models()
-    except Exception as e:
-        st.warning(f"Model warmup skipped: {e}")
-
-# ✅ show "Results: 3/6" from the start (stateful)
+# show "Results: 3/6" from the start (stateful)
 if "show_n" not in st.session_state:
     st.session_state["show_n"] = 3
 
@@ -868,6 +863,13 @@ if submitted:
     if not text.strip():
         st.warning("Please enter a short description.")
         st.stop()
+
+    # warmup ONLY when needed (cached inside warmup_nlp_stack)
+    loader = _show_inline_loader("Loading engine…")
+    try:
+        warmup_nlp_stack()
+    finally:
+        loader.empty()
 
     st.caption("Curated selection. Always shown as a 3-column grid.")
 
