@@ -10,49 +10,9 @@ import streamlit as st
 
 from ui.theme import inject_styles
 from ui.nav import top_nav
-from ui.bootstrap import get_nlp  # already exists in your project (spaCy cached)
+from ui.bootstrap import warmup_nlp_stack  # centralized warmup (cached)
 
-# -----------------------------
-# Warmup (spaCy + NLP stack)
-# -----------------------------
-@st.cache_resource(show_spinner=False)
-def _warmup_nlp_stack() -> bool:
-    """
-    Does:
-        Warm up spaCy + polarity + world alias index + lexicon (+ optional semantic embeddings cache).
-    """
-    _ = get_nlp()
-
-    from Shopping_assistant.nlp.parsing.polarity import make_free_polarity_fn
-    make_free_polarity_fn()
-
-    from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
-    lex = load_default_lexicon()
-    _ = lex.raw_index
-
-    from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index
-    build_world_alias_index(include_xkcd=True)
-
-    # optional: pre-build sentence-transformers key embeddings cache
-    try:
-        import os
-
-        if os.environ.get("SA_WARMUP_SEMANTIC", "1").strip().lower() in {"1", "true", "yes"}:
-            keys = list(lex.raw_index.keys())
-            if keys:
-                from Shopping_assistant.nlp.runtime.lexicon import (
-                    _default_semantic_model,
-                    _load_or_build_key_embeddings,
-                )
-                _load_or_build_key_embeddings(keys, _default_semantic_model())
-    except Exception:
-        pass
-
-    return True
-
-
-_warmup_nlp_stack()
-
+# IMPORTANT: must be the first Streamlit call in the file
 st.set_page_config(
     page_title="Lipstick Recommender",
     layout="wide",
@@ -359,6 +319,16 @@ st.markdown(
 
 if not hero_data_uri:
     st.caption(f"Image not found: {hero_img.as_posix()}")
+
+# -----------------------------
+# Optional manual warmup (keeps Home fast)
+# -----------------------------
+with st.expander("Engine", expanded=False):
+    st.caption("Manual warmup to preload NLP resources. Not required for normal usage.")
+    if st.button("Warm up engine", use_container_width=True):
+        with st.spinner("Loading NLP stack..."):
+            warmup_nlp_stack()
+        st.success("NLP stack ready.")
 
 # -----------------------------
 # Local CSS for cards/steps
