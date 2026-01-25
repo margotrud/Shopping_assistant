@@ -15,6 +15,11 @@ from typing import Any, Optional
 import pandas as pd
 import streamlit as st
 
+# -----------------------------
+# Page config MUST be first (Streamlit best practice)
+# -----------------------------
+st.set_page_config(page_title="Playground", layout="wide", initial_sidebar_state="collapsed")
+
 from ui.theme import inject_styles
 from ui.nav import top_nav
 
@@ -33,10 +38,29 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 # -----------------------------
+# Bootstrap (NLP warmup): ensure this page warms up even if Home not visited
+# -----------------------------
+@st.cache_resource(show_spinner=False)
+def _warmup_nlp() -> Any:
+    """
+    Does:
+        Warm up spaCy once per Streamlit process to avoid first-query freeze.
+    """
+    from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy  # type: ignore
+
+    return load_spacy("en_core_web_sm")
+
+
+_ = _warmup_nlp()
+
+# -----------------------------
 # Accent color (sync with Home.py)
 # -----------------------------
 ACCENT = "#7A2E2E"
 ACCENT_SOFT = "rgba(122, 46, 46, 0.12)"
+
+inject_styles()
+top_nav(active="Playground")
 
 
 def _show_inline_loader(msg: str) -> Any:
@@ -87,11 +111,6 @@ def _norm_id(x: Any) -> str:
     if m:
         return m.group(1)
     return s
-
-
-st.set_page_config(page_title="Playground", layout="wide", initial_sidebar_state="collapsed")
-inject_styles()
-top_nav(active="Playground")
 
 
 def _render_html(markup: str) -> None:
@@ -366,13 +385,13 @@ def _assets() -> Any:
 def _warmup_models() -> None:
     """
     Does:
-        Pre-warm embedding model + alias index once per process (UX only).
+        Pre-warm polarity fn + CSS/XKCD index once per process (UX only).
     """
     from Shopping_assistant.nlp.parsing.polarity import make_free_polarity_fn  # type: ignore
     from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
 
     make_free_polarity_fn()
-    build_world_alias_index()
+    build_world_alias_index(include_xkcd=True)
 
 
 def _pick_first(row: pd.Series, cols: list[str]) -> str:
@@ -687,7 +706,7 @@ def _explain_from_resolved(text: str) -> dict[str, Any]:
     target_color: Optional[str] = None
     if likes_u:
         try:
-            idx = build_world_alias_index()
+            idx = build_world_alias_index(include_xkcd=True)
             cand = likes_u[0].strip().lower()
             info = idx.get(cand) if isinstance(idx, dict) else None
             hx = info.get("hex") if isinstance(info, dict) else None
@@ -710,7 +729,7 @@ def _explain_from_resolved(text: str) -> dict[str, Any]:
 def _recommend(text: str, *, assets: Any, topk: int = 64) -> pd.DataFrame:
     from Shopping_assistant.reco.recommend import recommend_from_text  # type: ignore
 
-    df = recommend_from_text(text, assets=assets, topk=64)
+    df = recommend_from_text(text, assets=assets, topk=topk)
     if not isinstance(df, pd.DataFrame):
         raise TypeError("recommend_from_text() must return a pandas.DataFrame.")
     return df
@@ -815,7 +834,7 @@ with st.spinner("Loading models…"):
     try:
         _warmup_models()
     except Exception as e:
-        st.warning(f"Model warmup skipped (embeddings not ready): {e}")
+        st.warning(f"Model warmup skipped: {e}")
 
 # ✅ show "Results: 3/6" from the start (stateful)
 if "show_n" not in st.session_state:

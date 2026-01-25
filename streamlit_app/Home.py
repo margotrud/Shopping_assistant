@@ -8,14 +8,56 @@ import mimetypes
 
 import streamlit as st
 
+from ui.theme import inject_styles
+from ui.nav import top_nav
+from ui.bootstrap import get_nlp  # already exists in your project (spaCy cached)
+
+# -----------------------------
+# Warmup (spaCy + NLP stack)
+# -----------------------------
+@st.cache_resource(show_spinner=False)
+def _warmup_nlp_stack() -> bool:
+    """
+    Does:
+        Warm up spaCy + polarity + world alias index + lexicon (+ optional semantic embeddings cache).
+    """
+    _ = get_nlp()
+
+    from Shopping_assistant.nlp.parsing.polarity import make_free_polarity_fn
+    make_free_polarity_fn()
+
+    from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
+    lex = load_default_lexicon()
+    _ = lex.raw_index
+
+    from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index
+    build_world_alias_index(include_xkcd=True)
+
+    # optional: pre-build sentence-transformers key embeddings cache
+    try:
+        import os
+
+        if os.environ.get("SA_WARMUP_SEMANTIC", "1").strip().lower() in {"1", "true", "yes"}:
+            keys = list(lex.raw_index.keys())
+            if keys:
+                from Shopping_assistant.nlp.runtime.lexicon import (
+                    _default_semantic_model,
+                    _load_or_build_key_embeddings,
+                )
+                _load_or_build_key_embeddings(keys, _default_semantic_model())
+    except Exception:
+        pass
+
+    return True
+
+
+_warmup_nlp_stack()
+
 st.set_page_config(
     page_title="Lipstick Recommender",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
-from ui.theme import inject_styles
-from ui.nav import top_nav
 
 inject_styles()
 top_nav(active="Home")
@@ -92,7 +134,7 @@ def _chip(title: str, body: str, href_page: str, cta: str) -> str:
 hero_data_uri = _img_data_uri(hero_img)
 
 # -----------------------------
-# CSS (fix: valid CSS + calmer image presence + better rhythm left)
+# CSS
 # -----------------------------
 st.markdown(
     """
@@ -123,8 +165,8 @@ section.hero{
 
 .hero-split{
   display: grid;
-  grid-template-columns: 1.22fr 0.78fr;  /* slightly more text weight */
-  gap: 40px;                              /* more calm separation */
+  grid-template-columns: 1.22fr 0.78fr;
+  gap: 40px;
   align-items: start;
 }
 
@@ -146,7 +188,7 @@ section.hero{
   height: 3px;
   background: var(--accent);
   border-radius: 3px;
-  margin: 18px 0 26px 0; /* more breathing room */
+  margin: 18px 0 26px 0;
 }
 
 .hero-left .p{
@@ -155,7 +197,7 @@ section.hero{
   margin-bottom: 18px
 }
 
-/* CTA zone = calmer, less “boxy” */
+/* CTA zone */
 .hero-ctas{
   display: flex;
   gap: 14px;
@@ -176,20 +218,17 @@ section.hero{
   opacity: 1;
 }
 
-/* Media column: make it feel secondary */
+/* Media column */
 .hero-media{
   display: flex;
   justify-content: center;
   align-items: flex-start;
   margin-top: 70px;
-
-  /* ajout */
   overflow: hidden;
 }
 
-
 .hero-media img{
-  width: 170%;              /* micro zoom */
+  width: 170%;
   max-width: 300px;
   height: auto;
 
@@ -200,8 +239,6 @@ section.hero{
   object-position: 55% 45%;
   transform: translateY(6px);
 }
-
-
 
 /* CTA */
 a.btn.primary{
@@ -324,7 +361,7 @@ if not hero_data_uri:
     st.caption(f"Image not found: {hero_img.as_posix()}")
 
 # -----------------------------
-# Local CSS for cards/steps (kept)
+# Local CSS for cards/steps
 # -----------------------------
 st.markdown(
     """
