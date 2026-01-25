@@ -639,7 +639,10 @@ def _choose_plain_color_pool(
 
     pool25 = _pool_by_hue_window(inv, anchor_lab=anchor_lab, angle_deg=float(_HUE_WINDOW_DEG_DENSE))
     n_close_25 = int(len(pool25))
-    dense = n_close_25 >= int(_DENSE_REQUIRED_MULT) * int(topk)
+
+    # FIX: "dense" means: enough candidates to be reliable
+    dense = n_close_25 >= int(min_pool)
+    low_color_coverage = n_close_25 < int(min_pool)
 
     chosen_angle = None
     chosen_pool = None
@@ -648,6 +651,7 @@ def _choose_plain_color_pool(
         chosen_angle = float(_HUE_WINDOW_DEG_DENSE)
         chosen_pool = pool25
     else:
+        # Expand window to get a workable pool, but keep low_color_coverage signal
         for ang in _HUE_WINDOW_DEG_STEPS:
             p = _pool_by_hue_window(inv, anchor_lab=anchor_lab, angle_deg=float(ang))
             if len(p) >= min_pool:
@@ -664,6 +668,7 @@ def _choose_plain_color_pool(
         "dense": bool(dense),
         "angle_deg": float(chosen_angle),
         "pool_n": int(len(chosen_pool)),
+        "low_color_coverage": bool(low_color_coverage),
     }
 
     if debug:
@@ -944,6 +949,17 @@ def recommend_from_text(
         print("\n[Top-K dim distribution]")
         for dim in ["light_hsl", "sat_hsl", "warmth", "depth", "colorfulness", "C_lab", "L_lab"]:
             _print_dim_stats(top, dim)
+
+    if plain_color_mode and isinstance(locals().get("_pool_meta", None), dict):
+        pm = _pool_meta
+        for k, v in {
+            "_pool_dense": pm.get("dense"),
+            "_pool_n_close_25": pm.get("n_close_25"),
+            "_pool_angle_deg": pm.get("angle_deg"),
+            "_pool_n": pm.get("pool_n"),
+            "_low_color_coverage": pm.get("low_color_coverage"),
+        }.items():
+            top[k] = v
 
     return top
 
