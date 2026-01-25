@@ -961,6 +961,12 @@ def recommend_from_text(
         }.items():
             top[k] = v
 
+    if has_color and (anchor_lab is not None):
+        L0, a0, b0 = anchor_lab
+        top["_anchor_L_lab"] = float(L0)
+        top["_anchor_a_lab"] = float(a0)
+        top["_anchor_b_lab"] = float(b0)
+
     return top
 
 
