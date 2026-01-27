@@ -89,6 +89,25 @@ DENY_KEYS: set[str] = {
     "colour",
 }
 
+# Canonical anchors for ambiguous base colors.
+# This is NOT a mapping of all colors; it's a small, intentional semantic policy.
+CANONICAL_HEX_OVERRIDES: dict[str, str] = {
+    # Anchors policy (small + intentional)
+    # Purple: avoid drifting into magenta/fuchsia
+    "purple": "#800080",
+    # Fuchsia/Magenta: pure magenta anchor
+    "fuchsia": "#ff00ff",
+    "magenta": "#ff00ff",
+
+    # Beige: DO NOT use CSS beige (#f5f5dc is near-white and breaks neutral queries)
+    # Use a mid, cosmetic-like beige anchor (warmer + darker).
+    "beige": "#d2b48c",
+    # makeup-oriented peach (less "skin beige", more peachy-coral)
+    "peach": "#ffb07c",
+}
+
+
+
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -222,7 +241,8 @@ def fetch_available_lists(http: CachedHTTP, *, force: bool = False, debug: bool 
 
     bad = {"meta", "version", "readme", "info"}
     keys2 = sorted(
-        k for k, v in blob.items()
+        k
+        for k, v in blob.items()
         if isinstance(k, str) and k not in bad and isinstance(v, list)
     )
     if keys2:
@@ -373,6 +393,20 @@ def build_lexicon(
         if e.key in out:
             continue
         out[e.key] = {"name": e.name, "hex": e.hex, "source": e.source}
+
+    # Apply canonical overrides last (durable across regen).
+    for k, hx in CANONICAL_HEX_OVERRIDES.items():
+        kk = _norm_key(k)
+        nh = _norm_hex(hx)
+        if not nh:
+            continue
+        if kk in DENY_KEYS:
+            continue
+        if kk in out:
+            out[kk]["hex"] = nh
+            out[kk]["source"] = "canonical-override"
+        else:
+            out[kk] = {"name": k, "hex": nh, "source": "canonical-override"}
 
     return out
 

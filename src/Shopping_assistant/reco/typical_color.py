@@ -1,3 +1,4 @@
+# src/Shopping_assistant/reco/typical_color.py
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -52,26 +53,40 @@ def _deltaE76(lab: np.ndarray, seed: np.ndarray) -> np.ndarray:
     return np.linalg.norm(lab - seed[None, :], axis=1)
 
 
-# ---------- main: typical median around seed ----------
+def _safe_hex_to_lab(x: str) -> Tuple[float, float, float] | None:
+    try:
+        s = str(x).strip()
+        if not s:
+            return None
+        s2 = s.lstrip("#")
+        if len(s2) != 6:
+            return None
+        int(s2, 16)  # validate hex
+        return hex_to_lab("#" + s2)
+    except Exception:
+        return None
+
+
+# ---------- main: typical median around seed (DEPRECATED) ----------
 def apply_typical_median_near_seed(
     df: pd.DataFrame,
     *,
     seed_hex: Optional[str],
     chip_hex_col: str = "chip_hex",
     score_col: str = "score_total",
-    neighbor_m: int = 200,   # how many closest-to-seed to define the "family" support
-    min_n: int = 30,         # "if many products"
-    weight: float = 2.5,     # how strongly to pull toward typical
+    neighbor_m: int = 200,  # how many closest-to-seed to define the "family" support
+    min_n: int = 30,  # "if many products"
+    weight: float = 2.5,  # how strongly to pull toward typical
 ) -> pd.DataFrame:
     """
-    Data-driven typical color:
-    - Use seed_hex -> seed Lab
-    - Find neighbor_m closest items by ΔE to seed
-    - If >= min_n, compute median Lab on that neighborhood and boost items near that median.
+    Deprecated behavior (seed-centric).
+    This function is kept for backward compatibility but should NOT be used
+    to implement "typical center of family" for plain-color queries.
 
-    Contract:
-    - Never expands the pool; only re-ranks by adjusting score_col.
-    - If any required input is missing/invalid => no-op fallback (returns df unchanged).
+    Current recommended approach:
+    - build a family pool in recommend.py
+    - compute robust medians inside that pool
+    - apply _apply_median_in_pool_rerank() ONLY for plain-color queries
     """
     if df is None or df.empty:
         return df
@@ -82,22 +97,7 @@ def apply_typical_median_near_seed(
 
     out = df.copy()
 
-    # robust hex parsing: drop invalid chip_hex rows from typical computation (but keep them in output)
     hx = out[chip_hex_col].astype(str).str.strip()
-
-    def _safe_hex_to_lab(x: str) -> Tuple[float, float, float] | None:
-        try:
-            s = str(x).strip()
-            if not s:
-                return None
-            s2 = s.lstrip("#")
-            if len(s2) != 6:
-                return None
-            int(s2, 16)  # validate hex
-            return hex_to_lab("#" + s2)
-        except Exception:
-            return None
-
     lab_list = hx.apply(_safe_hex_to_lab)
     ok = lab_list.notna()
 
@@ -118,28 +118,25 @@ def apply_typical_median_near_seed(
     if m < min_n:
         return out
 
-    # neighborhood around seed (defines "this color in this catalog")
     ord_idx = np.argsort(d_seed_ok)[:m]
     neigh_lab = lab[ord_idx]
-    med = np.median(neigh_lab, axis=0)  # median Lab prototype for "typical"
+    med = np.median(neigh_lab, axis=0)  # median Lab prototype (seed neighborhood)
 
     d_typ_ok = np.linalg.norm(lab - med[None, :], axis=1)
 
-    # write diagnostics columns for debug/inspection
     out["_dE_seed"] = np.nan
     out["_dE_typical"] = np.nan
-
     out.loc[out.index[idx_ok], "_dE_seed"] = d_seed_ok
     out.loc[out.index[idx_ok], "_dE_typical"] = d_typ_ok
 
-    # higher is better => negative distance
     score_typ_ok = -d_typ_ok
     out["_score_typical"] = np.nan
     out.loc[out.index[idx_ok], "_score_typical"] = score_typ_ok
 
     if score_col in out.columns:
-        out[score_col] = pd.to_numeric(out[score_col], errors="coerce")
-        out[score_col] = out[score_col].fillna(0.0) + float(weight) * out["_score_typical"].fillna(0.0).astype(float)
+        out[score_col] = pd.to_numeric(out[score_col], errors="coerce").fillna(0.0) + float(weight) * out[
+            "_score_typical"
+        ].fillna(0.0).astype(float)
     else:
         out[score_col] = float(weight) * out["_score_typical"].fillna(0.0).astype(float)
 
