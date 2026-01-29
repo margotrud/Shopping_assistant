@@ -1,0 +1,3 @@
+export SA_ENRICHED_CSV_PATH="data/enriched_data/Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv"
+export SA_CALIBRATION_JSON_PATH="data/models/color_scoring_calibration.json"
+export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
