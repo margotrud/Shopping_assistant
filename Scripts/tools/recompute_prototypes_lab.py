@@ -17,7 +17,7 @@ from Shopping_assistant.color.scoring import (
     _ensure_cluster_id,
 )
 
-# Copie locale du mapping (doit rester aligné avec color/scoring.py)
+# Copie locale du mapping (doit rester aligné avec colors/scoring.py)
 _AXIS_TO_DIM = {
     "brightness": "light_hsl",
     "saturation": "sat_hsl",
@@ -26,7 +26,7 @@ _AXIS_TO_DIM = {
     "clarity": "colorfulness",
 }
 
-# Copie locale des quantiles (doit rester aligné avec color/scoring.py)
+# Copie locale des quantiles (doit rester aligné avec colors/scoring.py)
 _LEVEL_TO_Q = {
     "low": 0.35,
     "medium": 0.50,

@@ -93,7 +93,7 @@ def main() -> None:
             calibration_path=calibration_path,
         ).head(topk)
 
-        # merge back physical color dimensions
+        # merge back physical colors dimensions
         topm = scored.merge(
             inventory,
             on=["product_id", "shade_id"],

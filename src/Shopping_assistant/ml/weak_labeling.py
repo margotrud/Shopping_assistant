@@ -42,7 +42,7 @@ class WeakLabelConfig:
     bottom_q: float = 0.15   # bottom 15% -> negative
     seed: int = 7
 
-    # Features for first ML baseline (color-only)
+    # Features for first ML baseline (colors-only)
     feature_cols: Tuple[str, ...] = (
         "L_lab",
         "a_lab",
@@ -62,7 +62,7 @@ class WeakLabelConfig:
 def _load_scores(scores_dir: Path) -> pd.DataFrame:
     files = sorted(glob.glob(str(scores_dir / "scored_cluster_*.csv")))
     if not files:
-        raise FileNotFoundError(f"No scoring files found in {scores_dir}. Run color.scoring first.")
+        raise FileNotFoundError(f"No scoring files found in {scores_dir}. Run colors.scoring first.")
 
     dfs = []
     for fp in files:
@@ -208,9 +208,9 @@ def split_and_save(df: pd.DataFrame, outdir: Path, *, cfg: WeakLabelConfig) -> N
 # ---------------------------------------------------------------------
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Generate weak labels from scoring outputs and join enriched color features.")
+    p = argparse.ArgumentParser(description="Generate weak labels from scoring outputs and join enriched colors features.")
     p.add_argument("--scores-dir", type=str, default=str(_default_scores_dir()), help="Directory containing scored_cluster_*.csv files.")
-    p.add_argument("--enriched", type=str, default=str(_default_enriched_csv()), help="Enriched CSV containing color features.")
+    p.add_argument("--enriched", type=str, default=str(_default_enriched_csv()), help="Enriched CSV containing colors features.")
     p.add_argument("--outdir", type=str, default=str(_default_outdir()), help="Output directory for weak labels + splits.")
     p.add_argument("--top-q", type=float, default=0.15, help="Top fraction as positive.")
     p.add_argument("--bottom-q", type=float, default=0.15, help="Bottom fraction as negative.")

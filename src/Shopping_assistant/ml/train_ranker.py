@@ -143,7 +143,7 @@ def build_hgb(cfg: TrainConfig) -> HistGradientBoostingClassifier:
 # ---------------------------------------------------------------------
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Train a weakly-supervised color ranker (binary) from data/ml splits.")
+    p = argparse.ArgumentParser(description="Train a weakly-supervised colors ranker (binary) from data/ml splits.")
     p.add_argument("--ml-dir", type=str, default=str(_default_ml_dir()), help="Directory containing train/valid/test CSV.")
     p.add_argument("--model", type=str, default="hgb", choices=["hgb", "logreg"], help="Model type.")
     p.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for reporting accuracy/CM.")
