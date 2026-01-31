@@ -71,7 +71,7 @@ st.markdown(
 
       <p class="p">
         User preferences expressed in natural language are transformed into
-        numeric constraints and applied to structured color representations
+        numeric constraints and applied to structured colors representations
         to produce a ranked list of products.
       </p>
     </div>
@@ -95,7 +95,7 @@ st.markdown(
       </p>
 
       <ul class="p">
-        <li>Each product is embedded in multiple complementary numeric color spaces</li>
+        <li>Each product is embedded in multiple complementary numeric colors spaces</li>
         <li>User language is mapped to continuous constraints, not binary filters</li>
         <li>Soft preferences are combined through weighted aggregation</li>
         <li>All weights and thresholds are explicit, inspectable, and testable</li>
@@ -117,7 +117,7 @@ st.markdown(
     """
     <div class="callout">
       <strong>
-        This system is intentionally designed for color-driven cosmetics
+        This system is intentionally designed for colors-driven cosmetics
         and works well for lipsticks, but not for skincare.
       </strong>
     </div>
@@ -137,10 +137,10 @@ with c1:
         <div class="card positive">
           <div class="h3">What the system models well</div>
           <ul class="p">
-            <li>Nuanced color preferences (e.g. “deep but not bright”)</li>
+            <li>Nuanced colors preferences (e.g. “deep but not bright”)</li>
             <li>Trade-offs between multiple soft constraints</li>
             <li>Stable ranking behavior across similar inputs</li>
-            <li>Consistent performance on color-driven products</li>
+            <li>Consistent performance on colors-driven products</li>
           </ul>
         </div>
         """,
@@ -156,7 +156,7 @@ with c2:
             <li>Implicit or unstated personal preferences</li>
             <li>Online learning or user feedback adaptation</li>
             <li>Skin chemistry or skincare effects</li>
-            <li>Non color-based product attributes</li>
+            <li>Non colors-based product attributes</li>
           </ul>
         </div>
         """,
@@ -174,11 +174,11 @@ st.markdown(
 
       <p class="p">
         Product data is built from a curated lipstick inventory containing
-        brand names, shade names, finishes, and official color chips.
+        brand names, shade names, finishes, and official colors chips.
       </p>
 
       <p class="p">
-        Each shade is converted into numeric color representations
+        Each shade is converted into numeric colors representations
         using a fixed and fully reproducible preprocessing pipeline.
         No personal data is collected or stored.
       </p>
@@ -222,7 +222,7 @@ st.markdown(
         </div>
         <div class="stat">
           <div class="value">6</div>
-          <div class="label">modeled color dimensions</div>
+          <div class="label">modeled colors dimensions</div>
         </div>
         <div class="stat">
           <div class="value">&lt;100 ms</div>

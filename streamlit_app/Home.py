@@ -12,7 +12,6 @@ from ui.theme import inject_styles
 from ui.nav import top_nav
 from ui.bootstrap import warmup_nlp_stack  # centralized warmup (cached)
 
-# IMPORTANT: must be the first Streamlit call in the file
 st.set_page_config(
     page_title="Lipstick Recommender",
     layout="wide",
@@ -203,8 +202,8 @@ section.hero{
 /* CTA */
 a.btn.primary{
   background: var(--accent) !important;
-  color: #fff !important;
-  border-color: transparent !important;
+  colors: #fff !important;
+  border-colors: transparent !important;
 }
 a.btn.primary:hover{
   box-shadow: 0 10px 24px rgba(122, 46, 46, 0.32) !important;
@@ -219,14 +218,14 @@ a.btn.primary:hover{
   line-height: 1.6;
 }
 .home-guide-step{
-  border-color: rgba(122, 46, 46, 0.22) !important;
+  border-colors: rgba(122, 46, 46, 0.22) !important;
   background: rgba(122, 46, 46, 0.05) !important;
 }
 
-.entry-cta{ color: var(--accent) !important; }
+.entry-cta{ colors: var(--accent) !important; }
 
 .entry-grid a.entry-card:first-child{
-  border-color: rgba(122, 46, 46, 0.55) !important;
+  border-colors: rgba(122, 46, 46, 0.55) !important;
   background: linear-gradient(180deg, rgba(122, 46, 46, 0.10), rgba(255,255,255,0.85)) !important;
 }
 
@@ -279,7 +278,7 @@ hero_lines = [
     '<div class="home-guide">',
     '<div class="home-guide-line"><span class="home-guide-step">1</span> <strong>Describe</strong>a shade in natural language.</div>',
     '<div class="home-guide-line"><span class="home-guide-step">2</span> <strong>Understand</strong>the interpretation and scoring.</div>',
-    '<div class="home-guide-line"><span class="home-guide-step">3</span> <strong>Explore</strong>the color space and palette.</div>',
+    '<div class="home-guide-line"><span class="home-guide-step">3</span> <strong>Explore</strong>the colors space and palette.</div>',
     "</div>",
     "</div>",
 
@@ -305,7 +304,7 @@ entry_lines = [
     '<div class="entry-grid">',
     _chip("Playground", "Type a preference. Get ranked shades.", PLAYGROUND, "Start"),
     _chip("Explain (Text)", "Understand how words are interpreted into makeup intent.", EXPLAIN_TEXT, "Open"),
-    _chip("Explain (Colors)", "Explore how intent becomes constraints in color space.", EXPLAIN_COLORS, "Open"),
+    _chip("Explain (Colors)", "Explore how intent becomes constraints in colors space.", EXPLAIN_COLORS, "Open"),
     _chip("Shade Lab", "Explore shades across depth, brightness, and tone.", SHADE_LAB, "Explore"),
     _chip("Model Card", "Model assumptions, limitations, and design choices.", MODEL_CARD, "Read"),
     "</div>",
@@ -337,12 +336,12 @@ st.markdown(
     """
 <style>
 .home-guide { display: grid; gap: 10px; max-width: 860px; }
-.home-guide-line { color: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.home-guide-line { colors: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 10px; }
 .home-guide-step {
   width: 22px; height: 22px; border-radius: 999px;
   border: 1px solid var(--border);
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--ink); font-weight: 600; font-size: 12px;
+  colors: var(--ink); font-weight: 600; font-size: 12px;
   background: rgba(255,255,255,0.55);
 }
 
@@ -359,15 +358,15 @@ st.markdown(
   border-radius: 18px;
   padding: 16px 16px 14px 16px;
   display: block;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-colors 0.12s ease;
 }
 .entry-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 28px rgba(19, 42, 99, 0.10);
-  border-color: rgba(19, 42, 99, 0.22);
+  border-colors: rgba(19, 42, 99, 0.22);
 }
-.entry-title { color: var(--ink); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
-.entry-body { color: var(--muted); font-size: 14px; line-height: 1.50; margin-bottom: 10px; }
+.entry-title { colors: var(--ink); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+.entry-body { colors: var(--muted); font-size: 14px; line-height: 1.50; margin-bottom: 10px; }
 .entry-cta { font-weight: 600; font-size: 13px; }
 
 @media (max-width: 1100px) {

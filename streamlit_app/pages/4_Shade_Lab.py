@@ -110,7 +110,7 @@ st.markdown(
 )
 
 # ============================================================
-# HTML Grid (clickable color tiles)
+# HTML Grid (clickable colors tiles)
 # ============================================================
 def render_color_grid(
     hexes: list[str],
@@ -145,10 +145,10 @@ def render_color_grid(
             box-shadow: 0 1px 0 rgba(19,42,99,0.04);
             text-decoration: none;
             outline: none;
-            transition: transform 120ms ease, border-color 120ms ease;
+            transition: transform 120ms ease, border-colors 120ms ease;
           }}
           .shade-tile:hover {{
-            border-color: rgba(19,42,99,0.28);
+            border-colors: rgba(19,42,99,0.28);
             transform: translateY(-1px);
           }}
           .shade-tile:active {{
@@ -187,7 +187,7 @@ def show_cluster(df: pd.DataFrame, center_hex: str) -> None:
     cluster_id = df.loc[df["hex"] == center_hex, "cluster_id"].iloc[0]
     cluster_df = df[df["cluster_id"] == cluster_id]
 
-    st.markdown("### Selected color")
+    st.markdown("### Selected colors")
     st.markdown(
         textwrap.dedent(
             f"""
@@ -222,5 +222,5 @@ def show_cluster(df: pd.DataFrame, center_hex: str) -> None:
 if selected_hex:
     show_cluster(df, selected_hex)
 else:
-    st.markdown("### Pick a color")
+    st.markdown("### Pick a colors")
     render_color_grid(df["hex"].head(120).tolist(), cols=10, tile_h=72, gap=16)

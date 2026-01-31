@@ -40,7 +40,7 @@ from ui.nav import top_nav
 from ui.bootstrap import warmup_nlp_stack  # ✅ single source of truth
 
 # -----------------------------
-# Accent color (sync with Home.py)
+# Accent colors (sync with Home.py)
 # -----------------------------
 ACCENT = "#7A2E2E"
 ACCENT_SOFT = "rgba(122, 46, 46, 0.12)"
@@ -62,10 +62,10 @@ def _show_inline_loader(msg: str) -> Any:
               <div style="
                 width:16px;height:16px;border-radius:50%;
                 border:2px solid rgba(19,42,99,0.16);
-                border-top-color: {ACCENT};
+                border-top-colors: {ACCENT};
                 animation: spin 0.8s linear infinite;
               "></div>
-              <div style="color: rgba(19,42,99,0.70); font-size: 14px;">{html.escape(msg)}</div>
+              <div style="colors: rgba(19,42,99,0.70); font-size: 14px;">{html.escape(msg)}</div>
             </div>
             <style>
               @keyframes spin {{
@@ -133,9 +133,9 @@ st.markdown(
           --border: rgba(19,42,99,0.12);
           --card: rgba(255,255,255,0.86);
 
-          --primary-color: var(--accent) !important;
+          --primary-colors: var(--accent) !important;
           --primaryColor: var(--accent) !important;
-          --st-color-primary: var(--accent) !important;
+          --st-colors-primary: var(--accent) !important;
           --stPrimaryColor: var(--accent) !important;
         }}
 
@@ -143,13 +143,13 @@ st.markdown(
         ::-moz-selection {{ background: rgba(122, 46, 46, 0.22) !important; }}
 
         *:focus,
-        *:focus-visible {{ outline-color: var(--accent) !important; }}
+        *:focus-visible {{ outline-colors: var(--accent) !important; }}
 
         button[data-testid="baseButton-primary"],
         div[data-testid="stFormSubmitButton"] button {{
-          background-color: var(--accent) !important;
-          border-color: var(--accent) !important;
-          color: #fff !important;
+          background-colors: var(--accent) !important;
+          border-colors: var(--accent) !important;
+          colors: #fff !important;
           box-shadow: none !important;
           border-radius: 14px !important;
         }}
@@ -160,12 +160,12 @@ st.markdown(
         }}
 
         div[data-testid="stTextInput"] div[data-baseweb="input"] {{
-          border-color: rgba(19,42,99,0.16) !important;
+          border-colors: rgba(19,42,99,0.16) !important;
           box-shadow: none !important;
           border-radius: 14px !important;
         }}
         div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {{
-          border-color: var(--accent) !important;
+          border-colors: var(--accent) !important;
           box-shadow: 0 0 0 3px rgba(122, 46, 46, 0.14) !important;
         }}
 
@@ -182,18 +182,18 @@ st.markdown(
           letter-spacing: 0.22em;
           text-transform: uppercase;
           font-size: 12px;
-          color: rgba(19,42,99,0.60);
+          colors: rgba(19,42,99,0.60);
           margin-bottom: 8px;
         }}
         .hero .h1 {{
           font-family: "Libre Baskerville", serif;
           font-size: 44px;
           line-height: 1.05;
-          color: var(--ink);
+          colors: var(--ink);
           margin-bottom: 8px;
         }}
         .hero .p {{
-          color: rgba(19,42,99,0.62);
+          colors: rgba(19,42,99,0.62);
           font-size: 15px;
           margin-bottom: 0px;
         }}
@@ -208,7 +208,7 @@ st.markdown(
           letter-spacing: 0.18em;
           text-transform: uppercase;
           font-size: 12px;
-          color: rgba(19,42,99,0.56);
+          colors: rgba(19,42,99,0.56);
           margin: 10px 0 10px 2px;
         }}
 
@@ -235,12 +235,12 @@ st.markdown(
           border-radius: 22px;
           overflow: hidden;
           box-shadow: 0 10px 26px rgba(19,42,99,0.06);
-          transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+          transition: transform 0.14s ease, box-shadow 0.14s ease, border-colors 0.14s ease;
         }}
         .luxe-card:hover {{
           transform: translateY(-2px);
           box-shadow: 0 14px 34px rgba(19,42,99,0.10);
-          border-color: rgba(122, 46, 46, 0.24);
+          border-colors: rgba(122, 46, 46, 0.24);
         }}
 
         .luxe-media {{
@@ -271,14 +271,14 @@ st.markdown(
           letter-spacing: 0.22em;
           text-transform: uppercase;
           font-size: 11px;
-          color: rgba(19,42,99,0.56);
+          colors: rgba(19,42,99,0.56);
           margin-bottom: 8px;
         }}
 
         .luxe-title {{
           font-size: 16px;
           font-weight: 700;
-          color: rgba(19,42,99,0.96);
+          colors: rgba(19,42,99,0.96);
           line-height: 1.25;
           margin-bottom: 6px;
 
@@ -291,7 +291,7 @@ st.markdown(
 
         .luxe-shade {{
           font-size: 13px;
-          color: rgba(19,42,99,0.72);
+          colors: rgba(19,42,99,0.72);
           margin-bottom: 10px;
 
           display: -webkit-box;
@@ -324,7 +324,7 @@ st.markdown(
         }}
         .chip span {{
           font-size: 12px;
-          color: rgba(19,42,99,0.68);
+          colors: rgba(19,42,99,0.68);
           white-space: nowrap;
         }}
 
@@ -345,7 +345,7 @@ st.markdown(
         }}
         .pill span {{
           font-size: 12px;
-          color: rgba(19,42,99,0.78);
+          colors: rgba(19,42,99,0.78);
         }}
         </style>
         """
@@ -824,7 +824,7 @@ st.markdown(
         <div class="hero">
           <div class="kicker">Playground</div>
           <div class="h1">Find the shade you mean.</div>
-          <p class="p">Describe a lipstick in natural language. The ranking adapts to color, depth, brightness, and constraints</p>
+          <p class="p">Describe a lipstick in natural language. The ranking adapts to colors, depth, brightness, and constraints</p>
         </div>
         """
     ),

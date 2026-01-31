@@ -3,7 +3,7 @@
 Explain — Choosing the colors
 
 Goal:
-    Answer: “Why this color and not another?”
+    Answer: “Why this colors and not another?”
 Constraints:
     - No heavy math shown (no formulas; keep numbers optional / minimal).
     - Explain like a human decision process (editorial, luxe).
@@ -94,7 +94,7 @@ body.page-explain-choosing-colors .kicker{
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.55);
+  colors: rgba(19,42,99,0.55);
   margin-bottom: 8px;
 }
 body.page-explain-choosing-colors .h1{
@@ -102,11 +102,11 @@ body.page-explain-choosing-colors .h1{
   font-weight: 700;
   font-size: 52px;
   line-height: 1.05;
-  color: var(--ink);
+  colors: var(--ink);
   margin: 0 0 10px 0;
 }
 body.page-explain-choosing-colors .p{
-  color: rgba(19,42,99,0.70);
+  colors: rgba(19,42,99,0.70);
   font-size: 15px;
   line-height: 1.65;
   margin: 0;
@@ -115,7 +115,7 @@ body.page-explain-choosing-colors .h2{
   font-family: "Libre Baskerville", serif;
   font-weight: 700;
   font-size: 22px;
-  color: var(--ink);
+  colors: var(--ink);
   margin: 0 0 10px 0;
 }
 body.page-explain-choosing-colors .hairline{
@@ -129,7 +129,7 @@ body.page-explain-choosing-colors div[data-testid="stFormSubmitButton"] button,
 body.page-explain-choosing-colors .stButton > button{
   background: var(--primaryColor) !important;
   border: 1px solid rgba(107,31,43,0.55) !important;
-  color: #fff !important;
+  colors: #fff !important;
   box-shadow: 0 10px 30px rgba(19,42,99,0.10);
 }
 body.page-explain-choosing-colors div[data-testid="stFormSubmitButton"] button:hover,
@@ -164,13 +164,13 @@ body.page-explain-choosing-colors div[data-testid="stTextInput"] input{
   border-radius: 0 !important;
   outline: none !important;
   box-shadow: none !important;
-  color: var(--ink) !important;
+  colors: var(--ink) !important;
   font-size: 16px !important;
   padding: 6px 2px !important;
-  caret-color: var(--primaryColor);
+  caret-colors: var(--primaryColor);
 }
 body.page-explain-choosing-colors div[data-testid="stTextInput"] input:focus{
-  border-bottom-color: rgba(107,31,43,0.72) !important;
+  border-bottom-colors: rgba(107,31,43,0.72) !important;
   outline: none !important;
   box-shadow: none !important;
 }
@@ -188,19 +188,19 @@ body.page-explain-choosing-colors div[data-testid="stForm"] [data-testid="stHori
 body.page-explain-choosing-colors .hint{
   max-width: 760px;
   margin-top: 10px;
-  color: rgba(19,42,99,0.55);
+  colors: rgba(19,42,99,0.55);
   font-size: 14px;
 }
 
 /* Preferences */
 body.page-explain-choosing-colors .pref-note{ max-width: 860px; padding: 14px 0 0 0; }
 body.page-explain-choosing-colors .pref-line{
-  color: rgba(19,42,99,0.72);
+  colors: rgba(19,42,99,0.72);
   font-size: 15px;
   line-height: 1.65;
   margin: 0 0 6px 0;
 }
-body.page-explain-choosing-colors .pref-line em{ font-style: normal; color: rgba(19,42,99,0.90); }
+body.page-explain-choosing-colors .pref-line em{ font-style: normal; colors: rgba(19,42,99,0.90); }
 body.page-explain-choosing-colors .pref-hair{ height: 1px; background: rgba(19,42,99,0.08); margin: 12px 0 0 0; }
 
 /* Family step */
@@ -214,11 +214,11 @@ body.page-explain-choosing-colors .family-step-title{
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.52);
+  colors: rgba(19,42,99,0.52);
   margin: 0 0 8px 0;
 }
 body.page-explain-choosing-colors .family-step-line{
-  color: rgba(19,42,99,0.70);
+  colors: rgba(19,42,99,0.70);
   font-size: 14px;
   line-height: 1.55;
   margin: 0 0 6px 0;
@@ -242,19 +242,19 @@ body.page-explain-choosing-colors .v-item{
   padding: 10px 10px;
   border: 1px solid rgba(19,42,99,0.08);
 }
-body.page-explain-choosing-colors .v-item.best{ border-color: rgba(107,31,43,0.22); }
-body.page-explain-choosing-colors .v-item.good{ border-color: rgba(19,42,99,0.10); }
+body.page-explain-choosing-colors .v-item.best{ border-colors: rgba(107,31,43,0.22); }
+body.page-explain-choosing-colors .v-item.good{ border-colors: rgba(19,42,99,0.10); }
 body.page-explain-choosing-colors .v-item.rej{ border-style: dashed; opacity: 0.88; }
 body.page-explain-choosing-colors .v-k{
   font-size: 10px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.55);
+  colors: rgba(19,42,99,0.55);
   margin-bottom: 6px;
 }
 body.page-explain-choosing-colors .v-v{
   font-size: 13px;
-  color: rgba(19,42,99,0.84);
+  colors: rgba(19,42,99,0.84);
   line-height: 1.35;
 }
 
@@ -277,12 +277,12 @@ body.page-explain-choosing-colors .snap-title{
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.56);
+  colors: rgba(19,42,99,0.56);
   margin: 0;
 }
 body.page-explain-choosing-colors .snap-note{
   font-size: 12px;
-  color: rgba(19,42,99,0.62);
+  colors: rgba(19,42,99,0.62);
   margin: 0;
   font-style: normal;
 }
@@ -294,7 +294,7 @@ body.page-explain-choosing-colors .snap-row{
   margin: 14px 0;
 }
 body.page-explain-choosing-colors .snap-label{
-  color: rgba(19,42,99,0.72);
+  colors: rgba(19,42,99,0.72);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.10em;
@@ -320,10 +320,10 @@ body.page-explain-choosing-colors .bar-meta{
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
-  color: rgba(19,42,99,0.70);       /* stronger */
+  colors: rgba(19,42,99,0.70);       /* stronger */
 }
 body.page-explain-choosing-colors .bar-meta b{
-  color: rgba(19,42,99,0.92);
+  colors: rgba(19,42,99,0.92);
   letter-spacing: 0.08em;
 }
 
@@ -339,10 +339,10 @@ body.page-explain-choosing-colors .cards-head .cap{
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.62);
+  colors: rgba(19,42,99,0.62);
 }
 body.page-explain-choosing-colors .cards-head .cap b{
-  color: rgba(19,42,99,0.94);
+  colors: rgba(19,42,99,0.94);
   letter-spacing: 0.08em;
 }
 
@@ -360,7 +360,7 @@ body.page-explain-choosing-colors .choice-card{
 
 /* Status variations */
 body.page-explain-choosing-colors .choice-card.is-chosen{
-  border-color: rgba(107,31,43,0.32) !important;
+  border-colors: rgba(107,31,43,0.32) !important;
   background: var(--paper) !important;
   box-shadow:
     0 34px 96px rgba(19,42,99,0.18),
@@ -391,17 +391,17 @@ body.page-explain-choosing-colors .ribbon{
   letter-spacing: 0.18em;
   text-transform: uppercase;
   border: 1px solid rgba(19,42,99,0.14);
-  color: rgba(19,42,99,0.84);
+  colors: rgba(19,42,99,0.84);
   background: rgba(255,255,255,0.84);
 }
 body.page-explain-choosing-colors .choice-card.is-chosen .ribbon{
-  border-color: rgba(107,31,43,0.34);
-  color: rgba(107,31,43,0.94);
+  border-colors: rgba(107,31,43,0.34);
+  colors: rgba(107,31,43,0.94);
   background: rgba(255,255,255,0.92);
 }
 body.page-explain-choosing-colors .choice-card.is-rejected .ribbon{
-  border-color: rgba(19,42,99,0.12);
-  color: rgba(19,42,99,0.70);
+  border-colors: rgba(19,42,99,0.12);
+  colors: rgba(19,42,99,0.70);
   background: rgba(255,255,255,0.76);
 }
 
@@ -419,7 +419,7 @@ body.page-explain-choosing-colors .choice-title{
   font-weight: 700;
   font-size: 16px;
   line-height: 1.35;
-  color: var(--ink);
+  colors: var(--ink);
   margin: 0;
 }
 
@@ -438,7 +438,7 @@ body.page-explain-choosing-colors .pill{
   border-radius: 999px;
   font-size: 12px;
   border: 1px solid rgba(19,42,99,0.12);
-  color: rgba(19,42,99,0.78);
+  colors: rgba(19,42,99,0.78);
   background: transparent;
 }
 body.page-explain-choosing-colors .pill .dot{
@@ -448,20 +448,20 @@ body.page-explain-choosing-colors .pill .dot{
   border: 1px solid rgba(19,42,99,0.18);
 }
 body.page-explain-choosing-colors .pill.status.best{
-  border-color: rgba(107,31,43,0.28);
-  color: rgba(107,31,43,0.92);
+  border-colors: rgba(107,31,43,0.28);
+  colors: rgba(107,31,43,0.92);
 }
-body.page-explain-choosing-colors .pill.status.close{ border-color: rgba(19,42,99,0.14); }
+body.page-explain-choosing-colors .pill.status.close{ border-colors: rgba(19,42,99,0.14); }
 body.page-explain-choosing-colors .pill.status.reject{
-  border-color: rgba(19,42,99,0.12);
-  color: rgba(19,42,99,0.72);
+  border-colors: rgba(19,42,99,0.12);
+  colors: rgba(19,42,99,0.72);
 }
 
 /* Bullets */
 body.page-explain-choosing-colors .bullets{
   margin: 10px 0 0 0;
   padding-left: 0;
-  color: rgba(19,42,99,0.74);
+  colors: rgba(19,42,99,0.74);
   font-size: 14px;
   line-height: 1.60;
   list-style: none;
@@ -496,11 +496,11 @@ body.page-explain-choosing-colors .proof-title{
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(19,42,99,0.52);
+  colors: rgba(19,42,99,0.52);
   margin: 0 0 8px 0;
 }
 body.page-explain-choosing-colors .because-line{
-  color: rgba(19,42,99,0.72);
+  colors: rgba(19,42,99,0.72);
   font-size: 14px;
   line-height: 1.55;
   margin: 0 0 6px 0;
@@ -515,12 +515,12 @@ body.page-explain-choosing-colors .proof{
 body.page-explain-choosing-colors .proof-line{
   font-family: inherit;
   font-size: 12px;
-  color: rgba(19,42,99,0.66);
+  colors: rgba(19,42,99,0.66);
   margin: 0 0 6px 0;
 }
 body.page-explain-choosing-colors .proof-note{
   font-size: 12px;
-  color: rgba(19,42,99,0.56);
+  colors: rgba(19,42,99,0.56);
   margin: 6px 0 0 0;
   font-style: normal;
 }
@@ -539,7 +539,7 @@ body.page-explain-choosing-colors .metric{
   align-items: center;
 }
 body.page-explain-choosing-colors .metric-label{
-  color: rgba(19,42,99,0.56);
+  colors: rgba(19,42,99,0.56);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -547,7 +547,7 @@ body.page-explain-choosing-colors .metric-label{
 }
 body.page-explain-choosing-colors .metric-grade{
   text-align: right;
-  color: rgba(19,42,99,0.76);
+  colors: rgba(19,42,99,0.76);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -995,7 +995,7 @@ st.markdown(
     This page explains the selection like a human decision:
     we group shades into families, remove what doesn’t fit your intent, and keep what feels closest.
   </p>
-  <p class="p" style="margin-top:6px; color: rgba(19,42,99,0.60); font-size: 14px;">
+  <p class="p" style="margin-top:6px; colors: rgba(19,42,99,0.60); font-size: 14px;">
     You’ll get: a short rationale, a simple signal snapshot, then a 3-way comparison (best, good alternative, rejected).
   </p>
 </div>
@@ -1049,7 +1049,7 @@ if df is None or df.empty:
     st.markdown(
         """
 <div class="section">
-  <div class="hint">No shades were returned. Try a simpler sentence (one color family + one constraint).</div>
+  <div class="hint">No shades were returned. Try a simpler sentence (one colors family + one constraint).</div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -1312,7 +1312,7 @@ st.markdown(
     """
 <div class="section">
   <p class="p">
-    The app doesn’t look for the “best” color. It looks for <em>your</em> color.
+    The app doesn’t look for the “best” colors. It looks for <em>your</em> colors.
   </p>
 </div>
 """,

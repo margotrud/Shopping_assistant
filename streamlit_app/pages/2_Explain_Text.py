@@ -243,8 +243,8 @@ def _extract_signals(text: str, spans: List[Highlight]) -> Dict[str, List[str]]:
 
     if any("bright" in x for x in cons) and "brightness" not in conc:
         conc.append("brightness")
-    if prefs and "color family" not in conc:
-        conc.append("color family")
+    if prefs and "colors family" not in conc:
+        conc.append("colors family")
 
     return {"preferences": prefs, "constraints": cons, "concepts": conc}
 
@@ -259,7 +259,7 @@ def _clause_explanations(clauses: List[str]) -> List[str]:
         if re.search(r"\bnot\s+too\s+bright\b", c_low) or (("bright" in c_low) and _NEG_PAT.search(c_low)):
             out.append("Adds a restriction: it limits brightness (avoids shades that look too bright).")
         elif re.search(r"\b(?:red|pink|nude|coral|berry|plum|mauve|brown)\b", c_low):
-            out.append("Expresses a preference: it describes the color family you want.")
+            out.append("Expresses a preference: it describes the colors family you want.")
         else:
             out.append("Adds context, but it was not strong enough to become a preference or a constraint.")
     return out
@@ -276,7 +276,7 @@ def _impact_lines(signals: Dict[str, List[str]]) -> List[str]:
     if prefs:
         lines.append(f"Ranking will favor shades matching the {prefs[0]} family.")
     else:
-        lines.append("Ranking will not strongly favor a specific color family from this sentence.")
+        lines.append("Ranking will not strongly favor a specific colors family from this sentence.")
 
     if any("bright" in x for x in cons):
         lines.append("Very bright / very light shades will be pushed down in the ranking.")
@@ -284,7 +284,7 @@ def _impact_lines(signals: Dict[str, List[str]]) -> List[str]:
     elif cons:
         lines.append(f'Shades matching “{cons[0]}” will be pushed down in the ranking.')
     else:
-        lines.append("No strong constraint was detected, so ranking will mostly follow color similarity.")
+        lines.append("No strong constraint was detected, so ranking will mostly follow colors similarity.")
 
     lines.append("The final list is produced by combining all detected preferences and constraints.")
     return lines
@@ -315,7 +315,7 @@ st.markdown(
         .surface + .surface{ margin-top: 14px; }
 
         .label{
-          color: rgba(19,42,99,0.62);
+          colors: rgba(19,42,99,0.62);
           font-size: 12px;
           letter-spacing:0.12em;
           text-transform: uppercase;
@@ -339,11 +339,11 @@ st.markdown(
           border: 1px solid rgba(19,42,99,0.10);
           background: rgba(255,255,255,0.32);
         }
-        .clause .clause-k{ color: rgba(19,42,99,0.62); font-size: 12px; font-weight: 600; letter-spacing:0.10em; text-transform: uppercase; margin-bottom: 6px; }
-        .clause .clause-t{ color: #132A63; font-size: 16px; line-height: 1.6; }
+        .clause .clause-k{ colors: rgba(19,42,99,0.62); font-size: 12px; font-weight: 600; letter-spacing:0.10em; text-transform: uppercase; margin-bottom: 6px; }
+        .clause .clause-t{ colors: #132A63; font-size: 16px; line-height: 1.6; }
 
         .explain-list{ margin: 10px 0 0 0; padding: 0 0 0 18px; }
-        .explain-list li{ margin: 8px 0; color: rgba(19,42,99,0.78); line-height: 1.6; }
+        .explain-list li{ margin: 8px 0; colors: rgba(19,42,99,0.78); line-height: 1.6; }
 
         /* Signals: 3 mini-cards */
         .signal-grid{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 10px; }
@@ -366,17 +366,17 @@ st.markdown(
           background: rgba(19,42,99,0.18);
         }
 
-        .signal-k{ font-size: 12px; letter-spacing:0.10em; text-transform: uppercase; color: rgba(19,42,99,0.62); font-weight: 700; }
+        .signal-k{ font-size: 12px; letter-spacing:0.10em; text-transform: uppercase; colors: rgba(19,42,99,0.62); font-weight: 700; }
         /* Slightly smaller + higher contrast (luxury hierarchy) */
-        .signal-v{ margin-top: 6px; font-size: 13px; color: rgba(19,42,99,0.86); line-height: 1.5; }
+        .signal-v{ margin-top: 6px; font-size: 13px; colors: rgba(19,42,99,0.86); line-height: 1.5; }
 
-        .signal.pref{ border-color: rgba(122,46,46,0.18); background: rgba(122,46,46,0.08); }
+        .signal.pref{ border-colors: rgba(122,46,46,0.18); background: rgba(122,46,46,0.08); }
         .signal.pref:before{ background: rgba(122,46,46,0.30); }
 
-        .signal.cons{ border-color: rgba(19,42,99,0.18); background: rgba(19,42,99,0.06); }
+        .signal.cons{ border-colors: rgba(19,42,99,0.18); background: rgba(19,42,99,0.06); }
         .signal.cons:before{ background: rgba(19,42,99,0.28); }
 
-        .signal.conc{ border-color: rgba(19,42,99,0.10); background: rgba(255,255,255,0.30); }
+        .signal.conc{ border-colors: rgba(19,42,99,0.10); background: rgba(255,255,255,0.30); }
         .signal.conc:before{ background: rgba(19,42,99,0.16); }
 
         /* Input */
@@ -432,7 +432,7 @@ with col_a:
         f"""
         <div class="surface">
           <div class="label">What the app highlighted</div>
-          <div style="margin-top:10px; font-size:18px; line-height:1.75; color:#132A63;">{rendered}</div>
+          <div style="margin-top:10px; font-size:18px; line-height:1.75; colors:#132A63;">{rendered}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -465,7 +465,7 @@ with col_a:
             </div>
           </div>
 
-          <div style="margin-top:12px; color: rgba(19,42,99,0.72); line-height:1.6;">
+          <div style="margin-top:12px; colors: rgba(19,42,99,0.72); line-height:1.6;">
             In short, the app transforms your sentence into clear preferences and constraints that directly guide how shades are ranked.
           </div>
         </div>
@@ -482,7 +482,7 @@ with col_a:
                 f'<div class="clause">'
                 f'<div class="clause-k">Idea {i}</div>'
                 f'<div class="clause-t">{html.escape(c)}</div>'
-                f'<div style="margin-top:8px; color: rgba(19,42,99,0.72); line-height:1.6;"><em>{html.escape(exp)}</em></div>'
+                f'<div style="margin-top:8px; colors: rgba(19,42,99,0.72); line-height:1.6;"><em>{html.escape(exp)}</em></div>'
                 f"</div>"
             )
 
@@ -512,7 +512,7 @@ with col_b:
         st.markdown(f"<ul class='explain-list'>{bullets}</ul>", unsafe_allow_html=True)
     else:
         st.markdown(
-            "<p style='margin-top:10px; color: rgba(19,42,99,0.72);'>Type a sentence to see the explanation.</p>",
+            "<p style='margin-top:10px; colors: rgba(19,42,99,0.72);'>Type a sentence to see the explanation.</p>",
             unsafe_allow_html=True,
         )
 
