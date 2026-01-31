@@ -71,3 +71,7 @@ build/
 .vscode/
 .venv/
 .streamlit/secrets.toml
+
+# local artifacts
+Scripts/tools/data_product_image_cache/
+*.zip
