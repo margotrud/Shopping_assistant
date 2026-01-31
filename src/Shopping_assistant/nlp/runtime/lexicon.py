@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.utils.optional_deps import require
-from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy  # NEW: single spaCy loader
 
 SPACE_RE = re.compile(r"\s+")
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -52,19 +52,13 @@ def _stop_words_en() -> set[str]:
         nlp = load_spacy("en_core_web_sm")
         return set(getattr(nlp.Defaults, "stop_words", set()))
     except Exception:
-        # safe fallback: keep old behavior if spaCy model isn't available
-        spacy = require("spacy", extra="spacy", purpose="STOP_WORDS fallback for color lexicon guardrails.")
+        spacy = require("spacy", extra="spacy", purpose="STOP_WORDS fallback for colors lexicon guardrails.")
         return set(spacy.lang.en.stop_words.STOP_WORDS)
 
 
 def _token_variants(t: str) -> List[str]:
     """
     Runtime-only morphological normalization.
-
-    IMPORTANT:
-    - This may generate suffix-stripped candidates for matching.
-    - DO NOT materialize those candidates into the lexicon unless safe
-      (see _derive_missing_base_aliases()).
     """
     t = t.strip().lower()
     if not t:
@@ -77,7 +71,8 @@ def _token_variants(t: str) -> List[str]:
     if len(t) >= 4 and t.endswith("y"):
         out.append(t[:-1])
 
-    if len(t) >= 4 and t.endswith("s"):
+    # plural stripping: guarded (avoid glass->glas, dress->dres, etc.)
+    if len(t) >= 5 and t.endswith("s") and not t.endswith(("ss", "us", "is")):
         out.append(t[:-1])
 
     seen = set()
@@ -89,6 +84,22 @@ def _token_variants(t: str) -> List[str]:
     return uniq
 
 
+def _prefer_variant(token: str, index: Dict[str, Dict[str, Any]]) -> str:
+    """
+    Choose the best matching variant for a token, preferring exact/base forms.
+    """
+    t = token.strip().lower()
+    vars_ = _token_variants(t)
+
+    present = [v for v in vars_ if v in index]
+    if not present:
+        return vars_[0] if vars_ else t
+
+    # exact first, then shortest
+    present.sort(key=lambda v: (0 if v == t else 1, len(v)))
+    return present[0]
+
+
 def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
     """
     Add derived base aliases from existing keys (ish/y/s stripping),
@@ -96,8 +107,7 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
 
     Safety rule (critical):
       - Never create y-stripped bases when missing.
-        This prevents noun truncation like "berry" -> "berr",
-        "strawberry" -> "strawberr", etc.
+        This prevents noun truncation like "berry" -> "berr".
     """
     existing = set(idx.keys())
 
@@ -112,6 +122,7 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
             if v in existing:
                 continue
 
+            # never create y-stripped bases
             if k.endswith("y") and v == k[:-1]:
                 continue
 
@@ -119,6 +130,12 @@ def _derive_missing_base_aliases(idx: Dict[str, Dict[str, Any]]) -> None:
                 "name": str(v).title(),
                 "hex": info["hex"],
                 "source": f"{info.get('source', '')}:derived",
+                "n_sources": int(info.get("n_sources", 0) or 0),
+                "n_hex": int(info.get("n_hex", 0) or 0),
+                "anchor_policy": info.get("anchor_policy"),
+                "single_confidence": int(info.get("single_confidence", 0) or 0),
+                "n_phrase_keys": int(info.get("n_phrase_keys", 0) or 0),
+                "role": info.get("role"),
             }
             existing.add(v)
 
@@ -129,33 +146,65 @@ def _max_ngram_from_index(color_index: Dict[str, Dict[str, Any]]) -> int:
     return min(max(len(a.split()) for a in color_index.keys()), 4)
 
 
-def _prefer_variant(token: str, index: Dict[str, Dict[str, Any]]) -> str:
+def _is_descriptor(info: Dict[str, Any]) -> bool:
+    role = str(info.get("role") or "").strip().lower()
+    return role == "descriptor"
+
+
+def _single_ok(info: Dict[str, Any]) -> bool:
     """
-    Choose the best matching variant for a token, preferring base forms
-    (brown over brownish, peach over peachy) when both exist in the lexicon.
-
-    Note:
-      - This only prefers among forms that already exist in the lexicon.
-      - It does not create new entries.
+    Data-driven single-token guardrail for *non-exact* resolution (fuzzy/semantic).
+    Uses (1) builder's single_confidence if present, else (2) fallback (n_sources,n_hex).
+    Also blocks descriptor-like tokens (e.g. "nude") from resolving as a base colors.
     """
-    t = token.strip().lower()
-    vars_ = _token_variants(t)
+    if _is_descriptor(info):
+        return False
 
-    present = [v for v in vars_ if v in index]
-    if not present:
-        return vars_[0] if vars_ else t
+    sc = int(info.get("single_confidence", 0) or 0)
+    min_sc = int(os.environ.get("SA_COLOR_MIN_SINGLE_CONFIDENCE", "2"))
+    if sc > 0:
+        return sc >= min_sc
 
-    present.sort(key=lambda v: (v == t, len(v)))
-    return present[0]
+    min_sources = int(os.environ.get("SA_COLOR_MIN_SOURCES_SINGLE", "2"))
+    min_hex = int(os.environ.get("SA_COLOR_MIN_HEX_SINGLE", "2"))
+
+    ns = int(info.get("n_sources", 0) or 0)
+    nh = int(info.get("n_hex", 0) or 0)
+    return (ns >= min_sources) and (nh >= min_hex)
+
+
+def _axis_override_ok(info: Dict[str, Any]) -> bool:
+    """
+    When axis predictor fires on a token that exists in the colors lexicon,
+    allow the exact colors only if it has strong evidence of being a real colors/family.
+
+    Data-driven (no static token lists):
+      - single_confidence high OR phrase usage high OR sources/hex sufficient.
+    """
+    if _is_descriptor(info):
+        return False
+
+    sc = int(info.get("single_confidence", 0) or 0)
+    nphr = int(info.get("n_phrase_keys", 0) or 0)
+    ns = int(info.get("n_sources", 0) or 0)
+    nh = int(info.get("n_hex", 0) or 0)
+
+    min_sc = int(os.environ.get("SA_COLOR_AXIS_OVERRIDE_MIN_SC", "3"))
+    min_nphr = int(os.environ.get("SA_COLOR_AXIS_OVERRIDE_MIN_PHRASE_KEYS", "5"))
+    min_ns = int(os.environ.get("SA_COLOR_AXIS_OVERRIDE_MIN_SOURCES", "3"))
+    min_nh = int(os.environ.get("SA_COLOR_AXIS_OVERRIDE_MIN_HEX", "2"))
+
+    if sc >= min_sc:
+        return True
+    if nphr >= min_nphr:
+        return True
+    return (ns >= min_ns) and (nh >= min_nh)
 
 
 def _fuzzy_ratio(a: str, b: str) -> float:
     return 100.0 * SequenceMatcher(None, a, b).ratio()
 
 
-# -----------------------------
-# Semantic resolution helpers
-# -----------------------------
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
@@ -178,8 +227,7 @@ def _st_model(model_name: str):
         from sentence_transformers import SentenceTransformer  # type: ignore
     except Exception as e:
         raise RuntimeError(
-            "Semantic resolution requires sentence-transformers. "
-            "Install: pip install sentence-transformers"
+            "Semantic resolution requires sentence-transformers. Install: pip install sentence-transformers"
         ) from e
     return SentenceTransformer(model_name)
 
@@ -278,6 +326,12 @@ class ColorLexicon:
                 "name": str(v.get("name") or kk),
                 "hex": hx,
                 "source": str(v.get("source") or ""),
+                "n_sources": int(v.get("n_sources", 0) or 0),
+                "n_hex": int(v.get("n_hex", 0) or 0),
+                "anchor_policy": v.get("anchor_policy"),
+                "single_confidence": int(v.get("single_confidence", 0) or 0),
+                "n_phrase_keys": int(v.get("n_phrase_keys", 0) or 0),
+                "role": v.get("role"),
             }
 
         _derive_missing_base_aliases(idx)
@@ -290,12 +344,17 @@ class ColorLexicon:
         topk: int = 1,
         fuzzy_cutoff: float = 75.0,
         use_semantic: bool = False,
+        allow_exact: bool = True,
     ) -> List[ResolvedColor]:
         """
         Resolve a free-text candidate to lexicon entries.
 
-        Returns:
-          List[ResolvedColor] with attribute access (.hex, .name, ...).
+        Policy:
+          - Axis predictor is consulted early for single tokens.
+            If it fires, we return [] UNLESS the token has strong colors evidence in raw_index.
+          - Exact hit: return it (except descriptors).
+          - Variant hit: return it (except descriptors).
+          - Fuzzy/Semantic: guarded via _single_ok (and descriptors blocked).
         """
         use_sem = bool(use_semantic)
 
@@ -306,38 +365,59 @@ class ColorLexicon:
         if q in _stop_words_en():
             return []
 
-        # Axis guardrail (prevents bright/deep/etc resolving as colors)
-        try:
-            from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
-            pred = predict_axis(q, debug=False)
-            if getattr(pred, "axis", None) is not None:
-                return []
-        except Exception:
-            pass
+        # ------------------------------------------------------------------
+        # Early axis guardrail for single tokens, with data-driven override.
+        # Prevents "dark" resolving as a colors, without killing real colors
+        # like "purple"/"beige" when predict_axis has false positives.
+        # ------------------------------------------------------------------
+        if " " not in q:
+            try:
+                from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
 
-        info = self.raw_index.get(q)
-        if info:
-            return [
-                ResolvedColor(
-                    alias=q,
-                    name=str(info.get("name", q)),
-                    hex=str(info.get("hex")),
-                    source=str(info.get("source", "")),
-                    score=100.0,
-                )
-            ][: max(1, int(topk))]
+                pred = predict_axis(q, debug=False)
+                if getattr(pred, "axis", None) is not None:
+                    info0 = self.raw_index.get(q)
+                    if not info0:
+                        return []
+                    if not _axis_override_ok(info0):
+                        return []
+            except Exception:
+                pass
 
+        # ------------------------------------------------------------------
+        # Exact match (do NOT apply _single_ok here; only block descriptors).
+        # ------------------------------------------------------------------
+        if allow_exact:
+            info = self.raw_index.get(q)
+            if info:
+                if (" " not in q) and _is_descriptor(info):
+                    return []
+                return [
+                    ResolvedColor(
+                        alias=q,
+                        name=str(info.get("name", q)),
+                        hex=str(info.get("hex")),
+                        source=str(info.get("source") or "color_lexicon"),
+                        score=100.0,
+                    )
+                ][: max(1, int(topk))]
+
+        # ------------------------------------------------------------------
+        # Variant match (morphological): also no consensus gate; only block descriptors.
+        # ------------------------------------------------------------------
         if " " not in q:
             k2 = _prefer_variant(q, self.raw_index)
             if k2 and k2 != q:
                 info2 = self.raw_index.get(k2)
                 if info2:
+                    if _is_descriptor(info2):
+                        return []
                     return [
                         ResolvedColor(
                             alias=k2,
                             name=str(info2.get("name", k2)),
                             hex=str(info2.get("hex")),
-                            source=str(info2.get("source", "")),
+                            source=str(info2.get("source") or "color_lexicon"),
                             score=99.0,
                         )
                     ][: max(1, int(topk))]
@@ -371,12 +451,14 @@ class ColorLexicon:
 
             if best_k is not None and best_s >= cutoff:
                 info3 = self.raw_index[best_k]
+                if single and not _single_ok(info3):
+                    return []
                 return [
                     ResolvedColor(
                         alias=best_k,
                         name=str(info3.get("name", best_k)),
                         hex=str(info3.get("hex")),
-                        source=str(info3.get("source", "")),
+                        source=str(info3.get("source") or "color_lexicon"),
                         score=float(best_s),
                     )
                 ][: max(1, int(topk))]
@@ -386,16 +468,8 @@ class ColorLexicon:
             if " " in q:
                 return []
 
-            try:
-                from Shopping_assistant.nlp.axes.predictor import predict_axis  # local import to avoid cycles
-                pred = predict_axis(q, debug=False)
-                if getattr(pred, "axis", None) is not None:
-                    return []
-            except Exception:
-                pass
-
             model_name = _default_semantic_model()
-            keys = list(self.raw_index.keys())
+            keys = sorted(self.raw_index.keys())  # stable cache key order
             if keys:
                 key_emb = _load_or_build_key_embeddings(keys, model_name)
                 cand = _semantic_topk(q, keys, key_emb, model_name, topk=max(1, int(topk)))
@@ -416,12 +490,14 @@ class ColorLexicon:
                     info4 = self.raw_index.get(k_sem)
                     if not info4:
                         continue
+                    if not _single_ok(info4):
+                        continue
                     out.append(
                         ResolvedColor(
                             alias=k_sem,
                             name=str(info4.get("name", k_sem)),
                             hex=str(info4.get("hex")),
-                            source=str(info4.get("source", "")) + ":semantic",
+                            source=str(info4.get("source") or "color_lexicon") + ":semantic",
                             score=100.0 * sim,
                         )
                     )
@@ -458,19 +534,23 @@ class ColorLexicon:
                 cand0 = " ".join(parts)
                 info = self.raw_index.get(cand0)
                 if info:
-                    matched = {
-                        "alias": cand0,
-                        "name": info.get("name", cand0),
-                        "tok_start": i,
-                        "tok_len": n,
-                    }
-                    i += n
-                    break
+                    # block descriptors for single-token mentions (keeps "nude" out)
+                    if n == 1 and _is_descriptor(info):
+                        matched = None
+                    else:
+                        matched = {
+                            "alias": cand0,
+                            "name": info.get("name", cand0),
+                            "tok_start": i,
+                            "tok_len": n,
+                        }
+                        i += n
+                        break
 
-                if n == 1:
+                if n == 1 and not matched:
                     best = _prefer_variant(toks[i], self.raw_index)
                     info2 = self.raw_index.get(best)
-                    if info2:
+                    if info2 and not _is_descriptor(info2):
                         matched = {
                             "alias": best,
                             "name": info2.get("name", best),
@@ -479,7 +559,7 @@ class ColorLexicon:
                         }
                         i += 1
                         break
-                else:
+                elif not matched and n > 1:
                     base_prefix = " ".join(parts[:-1])
                     alts_last = sorted(
                         token_cands[n - 1],

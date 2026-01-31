@@ -263,7 +263,7 @@ def _weighted_ranked_vote(
 def predict_axis(
     label: str,
     *,
-    context: str = "cosmetics color attribute",
+    context: str = "cosmetics colors attribute",
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     min_sim: float = 0.35,
     min_margin: float = 0.08,

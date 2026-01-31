@@ -7,7 +7,7 @@ from Shopping_assistant.nlp.schema import Axis
 from Shopping_assistant.nlp.resolve.axis_thresholds import AxisThreshold
 
 
-# Keep aligned with Shopping_assistant.color.scoring._nlp_axis_to_dim()
+# Keep aligned with Shopping_assistant.colors.scoring._nlp_axis_to_dim()
 _AXIS_TO_DIM: Dict[str, str] = {
     "brightness": "light_hsl",
     "saturation": "sat_hsl",
@@ -234,7 +234,7 @@ def score_inventory_kwargs(
 ) -> Dict:
     """
     Does:
-        Build kwargs for Shopping_assistant.color.scoring.score_inventory().
+        Build kwargs for Shopping_assistant.colors.scoring.score_inventory().
 
     Important:
         Constraint blob uses LEVEL tokens (calibration-aware). If calibration is missing,

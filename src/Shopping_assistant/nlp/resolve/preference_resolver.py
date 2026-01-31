@@ -148,7 +148,7 @@ def _pick_primary_target(cands: List[Mention]) -> Optional[Mention]:
     if not cands:
         return None
 
-    # Prefer "primary" kinds first (color/finish), then highest confidence, then earliest span.
+    # Prefer "primary" kinds first (colors/finish), then highest confidence, then earliest span.
     def key(m: Mention) -> Tuple[int, float, int, int]:
         kind_rank = 0 if m.kind in _PRIMARY_KINDS else 1
         return (kind_rank, -float(m.confidence or 0.0), int(m.span.start), int(m.span.end))

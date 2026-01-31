@@ -25,10 +25,14 @@ else:
 _AXIS_LEXICON: Dict[str, Axis] = {
     # Hard override for known ambiguous token(s)
     "dim": Axis.BRIGHTNESS,
+
+    # Cosmetics/domain frequent: ensure stable mapping (NOT per-colors hardcoding)
+    "muted": Axis.SATURATION,
+    "dusty": Axis.SATURATION,
 }
 
 _COLOR_DOMAIN_NOUNS = {
-    "color", "shade", "tone", "tint", "hue",
+    "colors", "shade", "tone", "tint", "hue",
     "lipstick", "gloss", "balm", "liner", "stain",
 }
 
@@ -77,7 +81,7 @@ def _iter_axis_queries(tok: Token) -> List[str]:
     out: List[str] = []
     if lemma:
         out.append(lemma)
-        out.append(f"{lemma} color")
+        out.append(f"{lemma} colors")
 
     seen = set()
     uniq: List[str] = []
@@ -100,7 +104,7 @@ def _axis_from_text(
 ) -> Tuple[Optional[Axis], Dict[str, Any], Any]:
     pred = predict_axis(
         text,
-        context="cosmetics color attribute",
+        context="cosmetics colors attribute",
         model_name=_normalize_model_name(mapper_model),
         min_sim=float(mapper_threshold),
         min_margin=float(mapper_min_margin),
@@ -278,7 +282,7 @@ def _axis_from_token(
     lemma = _norm_text_piece(tok.lemma_)
     base_meta: Dict[str, Any] = {"tok_lemma": lemma, "tok_pos": tok.pos_, "tok_text": tok.text}
 
-    # --- LEXICON FIRST (hard override for known ambiguous tokens) ---
+    # --- LEXICON FIRST (hard override for known ambiguous tokens / frequent domain adjectives) ---
     axis2 = _AXIS_LEXICON.get(lemma)
 
     if axis2 is None and lemma.endswith("ness") and len(lemma) > 6:

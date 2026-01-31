@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 # ---------------------------------------------------------------------
 
 class MentionKind(str, Enum):
-    COLOR = "color"
+    COLOR = "colors"
     PRODUCT = "product"
     BRAND = "brand"
     FINISH = "finish"

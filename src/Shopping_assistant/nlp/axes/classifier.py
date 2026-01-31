@@ -45,7 +45,7 @@ class AxisPred:
 
 _AXIS_DESCRIPTIONS: Dict[Axis, Tuple[str, ...]] = {
     Axis.BRIGHTNESS: (
-        "Perceived lightness of a color: where it lies on the light ↔ dark (amount of light) continuum.",
+        "Perceived lightness of a colors: where it lies on the light ↔ dark (amount of light) continuum.",
         "How light or dark a shade appears, independent of how vivid or neon it is.",
     ),
     Axis.DEPTH: (

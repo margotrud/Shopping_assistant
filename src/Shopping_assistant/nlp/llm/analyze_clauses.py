@@ -228,7 +228,7 @@ def _lab_hue_deg_from_ab(a: float, b: float) -> float:
 
 
 def _iter_css_color_names() -> Iterable[str]:
-    webcolors = require("webcolors", extra="webcolors", purpose="CSS color name inventory")
+    webcolors = require("webcolors", extra="webcolors", purpose="CSS colors name inventory")
     if hasattr(webcolors, "names"):
         try:
             return list(webcolors.names("css3"))
@@ -240,7 +240,7 @@ def _iter_css_color_names() -> Iterable[str]:
 
 
 def _iter_xkcd_color_items() -> Iterable[Tuple[str, str]]:
-    require("matplotlib", extra="matplotlib", purpose="XKCD color name inventory")
+    require("matplotlib", extra="matplotlib", purpose="XKCD colors name inventory")
     from matplotlib import colors as mcolors  # type: ignore
     return list(getattr(mcolors, "XKCD_COLORS").items())
 
@@ -266,10 +266,10 @@ def _norm_alias(s: str) -> str:
 def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str, Any]]:
     """
     Does:
-        Build and cache a normalized alias->color-info index for CSS (+ optional XKCD).
+        Build and cache a normalized alias->colors-info index for CSS (+ optional XKCD).
         Cached across calls to eliminate first-call 10s+ rebuilds in interpret_nlp().
     """
-    webcolors = require("webcolors", extra="webcolors", purpose="CSS color inventory")
+    webcolors = require("webcolors", extra="webcolors", purpose="CSS colors inventory")
     idx: Dict[str, Dict[str, Any]] = {}
 
     css_aliases: set[str] = set()
