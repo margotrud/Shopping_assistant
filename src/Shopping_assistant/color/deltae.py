@@ -1,4 +1,4 @@
-# src/Shopping_assistant/color/deltae.py
+# src/Shopping_assistant/colors/deltae.py
 from __future__ import annotations
 
 import numpy as np

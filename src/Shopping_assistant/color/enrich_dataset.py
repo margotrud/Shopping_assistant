@@ -1,4 +1,4 @@
-# src/Shopping_assistant/color/enrich_dataset.py
+# src/Shopping_assistant/colors/enrich_dataset.py
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ _RGB_RE = re.compile(r"^\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*$")
 
 
 def _project_root() -> Path:
-    # .../src/Shopping_assistant/color/enrich_dataset.py -> project root = parents[3]
+    # .../src/Shopping_assistant/colors/enrich_dataset.py -> project root = parents[3]
     return Path(__file__).resolve().parents[3]
 
 
@@ -263,7 +263,7 @@ def enrich_dataframe(df: pd.DataFrame, *, cfg: EnrichConfig = EnrichConfig()) ->
     out["warmth"] = out["b_lab"] - 0.5 * out["a_lab"]
     out["sat_eff"] = out["C_lab"] / (out["L_lab"].clip(lower=1e-6))  # avoid div0
 
-    # Colorfulness (monotonic per-color proxy)
+    # Colorfulness (monotonic per-colors proxy)
     out["colorfulness"] = _colorfulness_hasler_susstrunk(rgb01)
 
     # Sanity cleanup: if RGB missing, computed values are garbage -> set NaN consistently
@@ -307,7 +307,7 @@ def enrich_csv(infile: Path, outdir: Path, *, cfg: EnrichConfig = EnrichConfig()
 
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Enrich Sephora lipstick dataset with perceptual color features from chip_rgb.",
+        description="Enrich Sephora lipstick dataset with perceptual colors features from chip_rgb.",
     )
     p.add_argument(
         "--infile",

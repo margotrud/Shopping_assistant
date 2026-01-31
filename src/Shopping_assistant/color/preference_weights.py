@@ -1,4 +1,4 @@
-# Shopping_assistant/color/preference_weights.py
+# Shopping_assistant/colors/preference_weights.py
 import json
 from pathlib import Path
 

@@ -1,4 +1,4 @@
-# src/Shopping_assistant/color/hard_color_pool.py
+# src/Shopping_assistant/colors/hard_color_pool.py
 from __future__ import annotations
 
 import os

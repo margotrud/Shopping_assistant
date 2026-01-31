@@ -11,7 +11,7 @@ import pandas as pd
 def _hex_to_rgb01(h: str) -> Tuple[float, float, float]:
     s = str(h).strip().lstrip("#")
     if len(s) != 6:
-        raise ValueError(f"Invalid hex color: {h!r}")
+        raise ValueError(f"Invalid hex colors: {h!r}")
     r = int(s[0:2], 16) / 255.0
     g = int(s[2:4], 16) / 255.0
     b = int(s[4:6], 16) / 255.0
@@ -81,12 +81,12 @@ def apply_typical_median_near_seed(
     """
     Deprecated behavior (seed-centric).
     This function is kept for backward compatibility but should NOT be used
-    to implement "typical center of family" for plain-color queries.
+    to implement "typical center of family" for plain-colors queries.
 
     Current recommended approach:
     - build a family pool in recommend.py
     - compute robust medians inside that pool
-    - apply _apply_median_in_pool_rerank() ONLY for plain-color queries
+    - apply _apply_median_in_pool_rerank() ONLY for plain-colors queries
     """
     if df is None or df.empty:
         return df

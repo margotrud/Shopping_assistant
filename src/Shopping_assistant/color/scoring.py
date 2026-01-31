@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,16 @@ __all__ = [
     "load_scoring_calibration",
     "load_preference_weights",
 ]
+
+# ---------------------------------------------------------------------
+# OPTIONAL: within-family constraint factor (label-relative, cosmetic)
+#   - Runtime import must be lazy (avoid circular imports + keep robustness)
+# ---------------------------------------------------------------------
+if TYPE_CHECKING:
+    from Shopping_assistant.color.constraints import ConstraintSpec as FamilyConstraintSpec
+else:
+    FamilyConstraintSpec = Any  # type: ignore
+
 
 # ---------------------------------------------------------------------
 # Script/CLI defaults (NOT for library use)
@@ -159,20 +169,23 @@ def _nlp_strength_to_level(direction: str, strength: str) -> str:
     """
     direction: 'raise'|'lower'
     strength: 'weak'|'med'|'strong'
-    Output: 'low'|'medium'|'high'|'very_high'
 
-    FIX:
-      For "lower", stronger intent must push the threshold LOWER (level 'low').
+    Contract:
+      - lower => <= threshold (strong = stricter => lower threshold)
+      - raise => >= threshold (strong = stricter => higher threshold)
+
+    IMPORTANT:
+      raise+weak must NOT map to 'low'. It must at least be 'medium'.
     """
     strength = str(strength)
     direction = str(direction)
 
     if direction == "lower":
-        # "lower X" => <= threshold. strong => low, med => medium, weak => high.
+        # <= threshold : strong => very strict (low), weak => lax (high)
         return {"strong": "low", "med": "medium", "weak": "high"}.get(strength, "medium")
 
-    # "raise X" => >= threshold. strong => high, med => medium, weak => low.
-    return {"strong": "high", "med": "medium", "weak": "low"}.get(strength, "medium")
+    # >= threshold : strong => very strict (very_high), weak => still meaningful (medium)
+    return {"strong": "very_high", "med": "high", "weak": "medium"}.get(strength, "medium")
 
 
 def _nlp_strength_to_weight(strength: str, *, soft_weight: float) -> float:
@@ -202,7 +215,6 @@ def constraints_from_nlp(
         if not axis or not direction or not strength:
             continue
 
-        # Override dim via meta["axis_query"] when present
         dim_override = None
         if isinstance(meta, dict):
             dim_override = meta.get("axis_query")
@@ -430,6 +442,7 @@ def _constraint_threshold_relative(
     qmap = _dim_relative_quantiles(cal, dim)
     q = float(qmap.get(str(level).lower(), 0.80))
 
+    # "<=" wants low quantiles when level increases in strictness for that direction.
     if str(op).strip() == "<=":
         q = 1.0 - q
 
@@ -482,6 +495,22 @@ def _constraint_violation(values: np.ndarray, op: str, threshold: float) -> np.n
     return np.maximum(0.0, threshold - values)
 
 
+def _constraint_tilt(values: np.ndarray, op: str, threshold: float) -> np.ndarray:
+    """
+    Signed, bounded preference in the desired direction (no extreme reward).
+
+    For ">=" : higher than threshold => positive tilt.
+    For "<=" : lower than threshold  => positive tilt.
+
+    Bounded with tanh so it doesn't reward extremes too much.
+    """
+    if op == ">=":
+        z = values - float(threshold)
+    else:  # "<="
+        z = float(threshold) - values
+    return np.tanh(z)
+
+
 def _constraint_suffix(c: Constraint) -> str:
     if c.cutpoint is not None:
         return f"{float(c.cutpoint):.6g}"
@@ -493,12 +522,20 @@ def _apply_constraints(
     constraints: Tuple[Constraint, ...],
     *,
     calibration: dict,
-) -> Tuple[np.ndarray, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame]:
+    """
+    Returns:
+      - total_penalty_norm: hinge penalties (>=0) in normalized units
+      - total_tilt_norm: signed bounded preference in normalized units (can be negative/positive)
+      - breakdown df: per-constraint penalty columns
+      - extras df: safe dim values (for debug/UX)
+    """
     if not constraints:
         z = np.zeros(len(work), float)
-        return z, pd.DataFrame(index=work.index), pd.DataFrame(index=work.index)
+        return z, z.copy(), pd.DataFrame(index=work.index), pd.DataFrame(index=work.index)
 
-    total = np.zeros(len(work), float)
+    total_pen = np.zeros(len(work), float)
+    total_tilt = np.zeros(len(work), float)
     breakdown: dict[str, np.ndarray] = {}
     extras: dict[str, np.ndarray] = {}
 
@@ -513,16 +550,28 @@ def _apply_constraints(
         vals = pd.to_numeric(work[c.dim], errors="coerce").to_numpy(float)
         safe_vals = np.nan_to_num(vals, nan=float(thr))
 
+        # penalty (hinge)
         viol = _constraint_violation(safe_vals, c.op, float(thr))
         viol_norm = viol / float(scale)
-
         pen = float(c.weight) * viol_norm
-        total += pen
+        total_pen += pen
+
+        # tilt (bounded directional preference)
+        safe_n = safe_vals / float(scale)
+        thr_n = float(thr) / float(scale)
+        tilt = _constraint_tilt(safe_n, c.op, thr_n)
+        tilt_w = float(c.weight) * tilt
+        total_tilt += tilt_w
 
         breakdown[f"penalty_{i}__{c.dim}{c.op}{_constraint_suffix(c)}"] = pen
         extras[f"c{i}__{c.dim}"] = safe_vals
 
-    return total, pd.DataFrame(breakdown, index=work.index), pd.DataFrame(extras, index=work.index)
+    return (
+        total_pen,
+        total_tilt,
+        pd.DataFrame(breakdown, index=work.index),
+        pd.DataFrame(extras, index=work.index),
+    )
 
 
 def _constraint_threshold(calibration: dict, c: Constraint) -> float:
@@ -666,6 +715,28 @@ def _proto_row_from_anchor(
     )
 
 
+def _ensure_C_H(work: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure C_lab and H_lab_deg exist (computed from a_lab/b_lab).
+    Required for preference term and within-family constraints.
+    """
+    out = work
+    if "C_lab" not in out.columns:
+        a = pd.to_numeric(out["a_lab"], errors="coerce").to_numpy(float)
+        b = pd.to_numeric(out["b_lab"], errors="coerce").to_numpy(float)
+        out = out.copy()
+        out["C_lab"] = np.sqrt(a * a + b * b)
+    if "H_lab_deg" not in out.columns:
+        a = pd.to_numeric(out["a_lab"], errors="coerce").to_numpy(float)
+        b = pd.to_numeric(out["b_lab"], errors="coerce").to_numpy(float)
+        h = np.degrees(np.arctan2(b, a))
+        h = np.where(h < 0.0, h + 360.0, h)
+        if out is work:
+            out = out.copy()
+        out["H_lab_deg"] = h
+    return out
+
+
 # ---------------------------------------------------------------------
 # Scoring (CORE) - no implicit disk access
 # ---------------------------------------------------------------------
@@ -683,6 +754,13 @@ def score_shades(
     preference_weights: Optional[dict[str, float]] = None,
     joint_min_feasible_frac: float = 0.05,
     joint_clamp_to_calibration: bool = True,
+    # --- within-family constraint factor (label-relative) ---
+    constraint_label: str | None = None,
+    constraint_specs: Sequence["FamilyConstraintSpec"] = (),
+    label_distributions: Optional[dict] = None,
+    constraint_p_min: float = 0.55,
+    constraint_p_hi: float = 0.75,
+    constraint_floor: float = 0.35,
 ) -> pd.DataFrame:
     # --- API COMPAT ---
     # Accept:
@@ -731,11 +809,18 @@ def score_shades(
                 b0 = float(work["b_lab"].astype(float).mean())
                 proto_row = _proto_row_from_anchor(anchor_lab=(L0, a0, b0))
         else:
-            # cluster-based proto selection is still possible for scripts, but not required by library
             _require_cols(prototypes, ("cluster_id", "L_lab", "a_lab", "b_lab"), name="prototypes")
-            # caller must pass the right row through proto_row_override OR provide a 'cluster_id' in prototypes
-            # We choose the FIRST row as a safe default if the caller does not override.
             proto_row = prototypes.iloc[0]
+
+    # Ensure features exist if needed later (preference/family)
+    if float(lambda_preference) != 0.0 or (constraint_label and constraint_specs):
+        work = _ensure_C_H(work)
+        # If proto_row comes from prototypes and lacks C/H, compute it once
+        if ("C_lab" not in proto_row.index) or ("H_lab_deg" not in proto_row.index):
+            C0, H0 = _lab_to_C_H((float(proto_row["L_lab"]), float(proto_row["a_lab"]), float(proto_row["b_lab"])))
+            proto_row = proto_row.copy()
+            proto_row["C_lab"] = float(C0)
+            proto_row["H_lab_deg"] = float(H0)
 
     deltaE = _delta_e_to_proto(work, proto_row)
     deltaE_n = _delta_e_norm(deltaE, calibration)
@@ -749,18 +834,17 @@ def score_shades(
         clamp_to_calibration=bool(joint_clamp_to_calibration),
     )
 
-    total_penalty_n, penalty_df, extras_df = _apply_constraints(work, constraints_eff, calibration=calibration)
+    total_penalty_n, total_tilt_n, penalty_df, extras_df = _apply_constraints(
+        work, constraints_eff, calibration=calibration
+    )
 
+    # preference term
     if float(lambda_preference) != 0.0:
         if preference_weights is None:
             raise ValueError(
                 "lambda_preference != 0 but 'preference_weights' is None. "
                 "Pass weights explicitly (load via io/assets or load_preference_weights(path))."
             )
-
-        _require_cols(work, ("C_lab", "H_lab_deg"), name="preference features")
-        if "C_lab" not in proto_row.index or "H_lab_deg" not in proto_row.index:
-            raise KeyError("proto_row missing required preference columns: ['C_lab', 'H_lab_deg']")
 
         std_L = _constraint_scale(calibration, "L_lab")
         std_C = _constraint_scale(calibration, "C_lab")
@@ -779,8 +863,60 @@ def score_shades(
     else:
         preference_score = 0.0
 
-    # IMPORTANT: constraints are penalties (>=0), never rewards
-    score = -deltaE_n + float(lambda_preference) * preference_score - float(lambda_constraints) * total_penalty_n
+    CONSTRAINT_GAIN = 4.0
+    TILT_GAIN = 0.6
+
+    score = (
+        -deltaE_n
+        + float(lambda_preference) * preference_score
+        - float(CONSTRAINT_GAIN) * float(lambda_constraints) * total_penalty_n
+        + float(CONSTRAINT_GAIN) * float(lambda_constraints) * float(TILT_GAIN) * total_tilt_n
+    )
+
+    # --- within-family multiplicative factor (applied to final score) ---
+    family_factor = None
+    if constraint_label and constraint_specs:
+        # runtime-safe lazy import (shows real root cause if it fails)
+        try:
+            from Shopping_assistant.color.constraints import constraint_factor as family_constraint_factor
+        except Exception as e:
+            raise ImportError(
+                "Within-family constraints requested but importing "
+                "`Shopping_assistant.color.constraints.constraint_factor` failed. "
+                f"Original error: {type(e).__name__}: {e}"
+            ) from e
+
+        if label_distributions is None:
+            raise ValueError("Within-family constraints requested but label_distributions is None.")
+
+        pcol = f"p_{str(constraint_label)}"
+        if pcol not in work.columns:
+            raise KeyError(
+                f"Within-family constraints require membership column '{pcol}' in df/work. "
+                "Add naming probabilities to inventory rows."
+            )
+
+        tmp = pd.DataFrame(
+            {
+                "L": pd.to_numeric(work["L_lab"], errors="coerce"),
+                "C": pd.to_numeric(work["C_lab"], errors="coerce"),
+                "h": pd.to_numeric(work["H_lab_deg"], errors="coerce"),
+                pcol: pd.to_numeric(work[pcol], errors="coerce"),
+            },
+            index=work.index,
+        )
+        family_factor = family_constraint_factor(
+            tmp,
+            label=str(constraint_label),
+            specs=list(constraint_specs),
+            dists=label_distributions,
+            p_col_prefix="p_",
+            p_min=float(constraint_p_min),
+            p_hi=float(constraint_p_hi),
+            floor=float(constraint_floor),
+        ).to_numpy(float)
+
+        score = score * family_factor
 
     chip_hex_out = None
     if "chip_hex" in work.columns:
@@ -800,12 +936,13 @@ def score_shades(
             "r": work["r"].astype("Int64") if "r" in work.columns else pd.NA,
             "g": work["g"].astype("Int64") if "g" in work.columns else pd.NA,
             "b": work["b"].astype("Int64") if "b" in work.columns else pd.NA,
-            # cluster_id removed from library scoring path; keep if present in df for UX only
             "cluster_id": work["cluster_id"].astype("Int64") if "cluster_id" in work.columns else pd.NA,
             "deltaE": deltaE,
             "deltaE_norm": deltaE_n,
             "constraint_penalty_norm": total_penalty_n,
+            "constraint_tilt_norm": total_tilt_n,
             "preference_score": preference_score,
+            "constraint_family_factor": family_factor if family_factor is not None else pd.NA,
             "score": score,
         },
         index=work.index,
@@ -814,9 +951,7 @@ def score_shades(
     out = pd.concat([out, extras_df, penalty_df], axis=1)
     out = out.sort_values(["score", "product_id", "shade_id"], ascending=[False, True, True], kind="mergesort")
 
-    # keep your original dedupe policy
     out = out.drop_duplicates(subset=["url", "shade_name"], keep="first")
-
     out = out.reset_index(drop=True)
     out["rank"] = np.arange(1, len(out) + 1)
     return out
@@ -826,8 +961,6 @@ def score_shades(
 # Script-friendly wrapper (explicit paths; defaults only for scripts)
 # ---------------------------------------------------------------------
 
-
-# Single canonical regex (avoid duplicate definitions / divergence)
 _CONSTRAINT_RE = re.compile(
     r"^\s*([A-Za-z0-9_]+)\s*(<=|>=)\s*((?:low|medium|high|very_high)|(?:[0-9]*\.?[0-9]+))\s*:\s*([0-9]*\.?[0-9]+)\s*$"
 )
@@ -914,7 +1047,7 @@ def _build_argparser() -> argparse.ArgumentParser:
 
     # Anchor options
     p.add_argument("--anchor-lab", type=str, default="", help='Anchor Lab "L,a,b"')
-    p.add_argument("--anchor-hex", type=str, default="", help="Anchor hex #RRGGBB (requires r,g,b not used here)")
+    p.add_argument("--anchor-hex", type=str, default="", help="Anchor hex #RRGGBB (not implemented here)")
     return p
 
 
