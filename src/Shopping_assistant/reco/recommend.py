@@ -1,16 +1,28 @@
 # src/Shopping_assistant/reco/recommend.py
 from __future__ import annotations
 
+import colorsys
+import os
 import re
+from functools import lru_cache
+from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
+from Shopping_assistant.color.deltae import delta_e_ciede2000
 from Shopping_assistant.color.hard_color_pool import hard_color_pool, params_from_env
 from Shopping_assistant.color.scoring import QuerySpec, score_shades
 from Shopping_assistant.io.assets import AssetBundle, load_default_assets
 from Shopping_assistant.nlp.interpretation.preference import interpret_nlp
 from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
+
+# within-family constraints (label-relative)
+from Shopping_assistant.color.constraints import (
+    ConstraintSpec as FamilyConstraintSpec,
+    load_label_distributions,
+)
 
 # =============================================================================
 # CONSTANTS
@@ -18,6 +30,25 @@ from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
 
 _DEFAULT_POOL_TOPN = 1200
 _MAX_POOL_TOPN = 2000
+
+# Hue-family fallback (generic; restrict pool for low-chroma anchors; MUST NOT rewrite anchor)
+_HUE_FALLBACK_BAND_DEG = 28.0
+_HUE_FALLBACK_MIN_POOL_N = 120  # kept for debug/telemetry; not used to rewrite anchor
+_HUE_FALLBACK_CHROMA_Q = 0.50  # kept for debug/telemetry; not used to rewrite anchor
+_HUE_FALLBACK_ANCHOR_C_MIN = 55.0
+
+# Lexicon anchor selection (generic)
+_LEX_TOPK = 10
+_LEX_FUZZY_CUTOFF = 60.0
+_LEX_SCORE_EPS = 0.03  # keep near-best score candidates when score is available
+
+# within-family constraint gating
+_FAMILY_P_MIN = 0.55
+_FAMILY_P_HI = 0.75
+_FAMILY_FLOOR = 0.35
+
+# quantiles supported by label_distributions (prevents KeyError like 0.65 missing)
+_ALLOWED_Q = np.array([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95], dtype=float)
 
 # =============================================================================
 # PRODUCT ELIGIBILITY FILTER
@@ -56,7 +87,7 @@ def _get_enum_value(x):
 def _has_color_like_mention(nlp_res) -> bool:
     for m in _get(nlp_res, "mentions", ()) or ():
         kind = _get_enum_value(_get(m, "kind", None))
-        if (kind or "").lower() != "color":
+        if (kind or "").lower() != "colors":
             continue
         pol = _get_enum_value(_get(m, "polarity", None))
         if (pol or "").lower() in {"like", "neutral", "unknown"}:
@@ -77,6 +108,15 @@ def _hex_to_rgb01(hx: str):
         return (r, g, b)
     except Exception:
         return None
+
+
+def _hex_to_hsv_h_deg(hx: str):
+    rgb01 = _hex_to_rgb01(hx)
+    if rgb01 is None:
+        return None
+    r, g, b = rgb01
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    return float(h * 360.0)
 
 
 def _srgb01_to_linear(x: float) -> float:
@@ -117,7 +157,7 @@ def _seed_hex_from_nlp(nlp_res):
     best_conf = -1.0
     for m in _get(nlp_res, "mentions", ()) or ():
         kind = (_get_enum_value(_get(m, "kind", None)) or "").lower()
-        if kind != "color":
+        if kind != "colors":
             continue
         pol = (_get_enum_value(_get(m, "polarity", None)) or "").lower()
         if pol not in {"like", "neutral", "unknown"}:
@@ -135,14 +175,83 @@ def _seed_hex_from_nlp(nlp_res):
     return best_hex
 
 
-def _anchor_lab_from_nlp(nlp_res):
+def _best_lexicon_lab_and_hex(lex, query: str):
     """
-    Robust anchor (deterministic):
-    1) meta lab_L/a/b if present
-    2) mention seed_hex/hex
-    3) lexicon resolve(canonical/raw) -> hex -> lab
+    Resolve top-k. Keep near-best score candidates (when score exists), then pick max chroma.
+    Returns (lab, hex).
+    """
+    if lex is None:
+        return None, None
+
+    try:
+        res = lex.resolve(
+            query,
+            topk=int(_LEX_TOPK),
+            fuzzy_cutoff=float(_LEX_FUZZY_CUTOFF),
+            use_semantic=True,
+        )
+    except Exception:
+        res = []
+
+    if not res:
+        return None, None
+
+    cands = []
+    for r in res:
+        hx = getattr(r, "hex", None)
+        if not isinstance(hx, str) or not hx:
+            continue
+        lab = _hex_to_lab(hx)
+        if lab is None:
+            continue
+        score = getattr(r, "score", None)
+        try:
+            score_f = float(score) if score is not None else None
+        except Exception:
+            score_f = None
+        L, a, b = lab
+        C = float(np.hypot(a, b))
+        cands.append((score_f, C, lab, hx))
+
+    if not cands:
+        return None, None
+
+    scores = [s for s, _, _, _ in cands if s is not None]
+    if scores:
+        best = max(scores)
+        keep = [x for x in cands if x[0] is None or x[0] >= (best - float(_LEX_SCORE_EPS))]
+    else:
+        keep = cands
+
+    keep.sort(key=lambda t: (t[1], -(t[0] if t[0] is not None else -1e9)), reverse=True)
+    _, _, lab_best, hx_best = keep[0]
+    return lab_best, hx_best
+
+
+def _anchor_source_mode() -> str:
+    """
+    Controls anchor source to prevent polluted anchors.
+    Values:
+      - 'lexicon' (recommended for anchor tests; ignores meta seed/lab)
+      - 'auto' (allows meta lab/seed then lexicon fallback)
+    Default: 'lexicon'
+    """
+    v = (os.getenv("SA_ANCHOR_SOURCE", "lexicon") or "lexicon").strip().lower()
+    return "auto" if v == "auto" else "lexicon"
+
+
+def _anchor_from_nlp(nlp_res):
+    """
+    Returns (anchor_lab, anchor_hex_used)
+    Priority depends on SA_ANCHOR_SOURCE:
+      - lexicon: lexicon resolve(canonical/raw) only (ignores meta lab/seed_hex)
+      - auto:
+          1) meta lab_L/a/b
+          2) meta seed_hex/hex
+          3) lexicon resolve(canonical/raw)
     """
     best_lab = None
+    best_hex = None
     best_score = -1.0
 
     try:
@@ -150,9 +259,11 @@ def _anchor_lab_from_nlp(nlp_res):
     except Exception:
         lex = None
 
+    mode = _anchor_source_mode()
+
     for m in _get(nlp_res, "mentions", ()) or ():
         kind = _get_enum_value(_get(m, "kind", None))
-        if (kind or "").lower() != "color":
+        if (kind or "").lower() != "colors":
             continue
 
         pol = _get_enum_value(_get(m, "polarity", None))
@@ -163,31 +274,28 @@ def _anchor_lab_from_nlp(nlp_res):
         meta = _get(m, "meta", {}) or {}
 
         lab_m = None
-        if isinstance(meta, dict):
-            L0 = meta.get("lab_L")
-            a0 = meta.get("lab_a")
-            b0 = meta.get("lab_b")
-            if isinstance(L0, (int, float)) and isinstance(a0, (int, float)) and isinstance(b0, (int, float)):
-                lab_m = (float(L0), float(a0), float(b0))
+        hex_m = None
 
-        if lab_m is None and isinstance(meta, dict):
-            hx0 = meta.get("seed_hex") or meta.get("hex")
-            if isinstance(hx0, str) and hx0:
-                lab_m = _hex_to_lab(hx0)
+        if mode == "auto":
+            if isinstance(meta, dict):
+                L0 = meta.get("lab_L")
+                a0 = meta.get("lab_a")
+                b0 = meta.get("lab_b")
+                if isinstance(L0, (int, float)) and isinstance(a0, (int, float)) and isinstance(b0, (int, float)):
+                    lab_m = (float(L0), float(a0), float(b0))
+
+            if lab_m is None and isinstance(meta, dict):
+                hx0 = meta.get("seed_hex") or meta.get("hex")
+                if isinstance(hx0, str) and hx0:
+                    hex_m = hx0
+                    lab_m = _hex_to_lab(hx0)
 
         if lab_m is None and lex is not None:
             canon = str(_get(m, "canonical", "") or "").strip()
             raw = str(_get(m, "raw", "") or "").strip()
             query = (canon or raw).strip().lower()
             if query:
-                try:
-                    res = lex.resolve(query, topk=1, fuzzy_cutoff=75.0, use_semantic=False)
-                except Exception:
-                    res = []
-                if res:
-                    hx = getattr(res[0], "hex", None)
-                    if isinstance(hx, str) and hx:
-                        lab_m = _hex_to_lab(hx)
+                lab_m, hex_m = _best_lexicon_lab_and_hex(lex, query)
 
         if lab_m is None:
             continue
@@ -195,8 +303,9 @@ def _anchor_lab_from_nlp(nlp_res):
         if conf > best_score:
             best_score = conf
             best_lab = lab_m
+            best_hex = hex_m
 
-    return best_lab
+    return best_lab, best_hex
 
 
 def _filter_invalid_products(inv: pd.DataFrame) -> pd.DataFrame:
@@ -208,9 +317,6 @@ def _filter_invalid_products(inv: pd.DataFrame) -> pd.DataFrame:
 
 
 def _restore_lab_cols(df_pool: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
-    """
-    score_shades may drop Lab columns. Restore them deterministically.
-    """
     if scored is None or scored.empty or df_pool is None or df_pool.empty:
         return scored
 
@@ -247,6 +353,351 @@ def _restore_lab_cols(df_pool: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFra
     return left.merge(right, on=keys, how="left")
 
 
+def _circ_dist_deg(a_deg: np.ndarray, b0_deg: float) -> np.ndarray:
+    d = (a_deg - float(b0_deg) + 180.0) % 360.0 - 180.0
+    return np.abs(d)
+
+
+def _ensure_hue_rgb_deg(inv: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds column _H_rgb_deg computed from chip_hex (HSV hue in degrees) if not present.
+    Safe for small inventories (<= few 10k). Your inv is ~1.6k.
+    """
+    if inv is None or inv.empty:
+        return inv
+    if "_H_rgb_deg" in inv.columns:
+        return inv
+    out = inv.copy()
+    if "chip_hex" not in out.columns:
+        return out
+    out["_H_rgb_deg"] = out["chip_hex"].astype(str).map(_hex_to_hsv_h_deg)
+    return out
+
+
+def _domain_pool_and_anchor(
+    inv: pd.DataFrame,
+    *,
+    anchor_lab: tuple[float, float, float],
+    anchor_hex: str | None,
+    hue_band_deg: float = _HUE_FALLBACK_BAND_DEG,
+    min_pool_n: int = _HUE_FALLBACK_MIN_POOL_N,
+    chroma_q: float = _HUE_FALLBACK_CHROMA_Q,
+    anchor_c_min: float = _HUE_FALLBACK_ANCHOR_C_MIN,
+) -> tuple[pd.DataFrame, tuple[float, float, float], dict]:
+    """
+    Hue-family fallback when anchor is low-chroma.
+
+    IMPORTANT:
+      - Hue is computed in HSV/RGB space (stable for light pinks).
+      - Fallback MUST ONLY restrict the candidate pool.
+      - Fallback MUST NOT rewrite/boost the anchor (nude/beige are valid low-chroma targets).
+    """
+    dbg = {
+        "fallback_used": False,
+        "anchor_C": None,
+        "H0": None,
+        "cand_n": None,
+        "cthr": None,  # kept for backward debug printouts; always None now
+        "anchor_lab_eff": None,
+        "hue_source": None,
+    }
+
+    if inv is None or inv.empty:
+        return inv, anchor_lab, dbg
+
+    if not {"L_lab", "a_lab", "b_lab", "C_lab"}.issubset(inv.columns):
+        return inv, anchor_lab, dbg
+
+    L0, a0, b0 = map(float, anchor_lab)
+    C0 = float(np.hypot(a0, b0))
+    dbg["anchor_C"] = C0
+
+    if not (C0 < float(anchor_c_min)):
+        return inv, anchor_lab, dbg
+
+    inv2 = _ensure_hue_rgb_deg(inv)
+    H0 = _hex_to_hsv_h_deg(anchor_hex) if isinstance(anchor_hex, str) else None
+    if H0 is None:
+        # last resort: if no hex, fall back to Lab-hue (can be wrong for light pinks)
+        H0 = float(np.degrees(np.arctan2(b0, a0)) % 360.0)
+        dbg["hue_source"] = "lab"
+    else:
+        dbg["hue_source"] = "rgb"
+
+    dbg["H0"] = float(H0)
+
+    if "_H_rgb_deg" in inv2.columns and pd.to_numeric(inv2["_H_rgb_deg"], errors="coerce").notna().any():
+        hvals = pd.to_numeric(inv2["_H_rgb_deg"], errors="coerce").to_numpy(float)
+        hdist = _circ_dist_deg(hvals, float(H0))
+        hue_mask = np.isfinite(hdist) & (hdist <= float(hue_band_deg))
+        cand = inv2.loc[hue_mask].copy()
+    else:
+        # fallback to Lab hue column if present
+        if "H_lab_deg" not in inv2.columns:
+            return inv, anchor_lab, dbg
+        hdist = _circ_dist_deg(inv2["H_lab_deg"].to_numpy(float), float(H0))
+        cand = inv2.loc[hdist <= float(hue_band_deg)].copy()
+
+    dbg["cand_n"] = int(len(cand))
+    if cand.empty:
+        return inv, anchor_lab, dbg
+
+    # Do NOT rewrite anchor based on cand stats.
+    dbg["fallback_used"] = True
+    dbg["anchor_lab_eff"] = tuple(map(float, anchor_lab))
+    return cand, tuple(map(float, anchor_lab)), dbg
+
+
+# =============================================================================
+# NEW: naming probs + label distributions (cached)
+# =============================================================================
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+@lru_cache(maxsize=1)
+def _load_chips_naming_probs() -> pd.DataFrame:
+    root = _project_root()
+    p = root / "data" / "colors" / "chips_with_naming_probs.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+
+    try:
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(p)
+        df = table.to_pandas()
+    except Exception:
+        df = pd.read_parquet(p)
+
+    if "chip_hex" not in df.columns:
+        return pd.DataFrame()
+
+    pcols = [c for c in df.columns if c.startswith("p_")]
+    keep = ["chip_hex"] + pcols
+    out = df[keep].copy()
+    out["chip_hex"] = out["chip_hex"].astype(str).str.lower()
+    return out.drop_duplicates(subset=["chip_hex"])
+
+
+@lru_cache(maxsize=1)
+def _load_family_label_distributions() -> dict:
+    root = _project_root()
+    p = root / "data" / "colors" / "label_distributions.json"
+    if not p.exists():
+        return {}
+    return load_label_distributions(p)
+
+
+def _attach_naming_probs(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Left-merge p_<label> onto df using chip_hex.
+    No hardcoding: uses whatever p_* exists in the parquet.
+    """
+    if df is None or df.empty:
+        return df
+    if "chip_hex" not in df.columns:
+        return df
+
+    probs = _load_chips_naming_probs()
+    if probs.empty:
+        return df
+
+    out = df.copy()
+    out["chip_hex"] = out["chip_hex"].astype(str).str.lower()
+
+    if any(c.startswith("p_") for c in out.columns):
+        return out
+
+    return out.merge(probs, on="chip_hex", how="left")
+
+
+def _first_family_label_from_nlp(nlp_res, *, dists: dict) -> str | None:
+    """
+    Choose a family label from NLP mentions if it exists in label_distributions keys.
+    No aliasing/hardcode. If it doesn't match, return None.
+    """
+    if not dists:
+        return None
+
+    keys = set(str(k).lower() for k in dists.keys())
+    for m in _get(nlp_res, "mentions", ()) or ():
+        kind = (_get_enum_value(_get(m, "kind", None)) or "").lower()
+        if kind != "colors":
+            continue
+        pol = (_get_enum_value(_get(m, "polarity", None)) or "").lower()
+        if pol not in {"like", "neutral", "unknown"}:
+            continue
+
+        canon = str(_get(m, "canonical", "") or "").strip().lower()
+        raw = str(_get(m, "raw", "") or "").strip().lower()
+        for s in (canon, raw):
+            if s and s in keys:
+                return s
+
+    return None
+
+
+def _snap_q(q: float) -> float:
+    qf = float(q)
+    i = int(np.argmin(np.abs(_ALLOWED_Q - qf)))
+    return float(_ALLOWED_Q[i])
+
+
+def _family_specs_from_nlp(nlp_constraints: Sequence[object]) -> list[FamilyConstraintSpec]:
+    """
+    Map existing NLP constraint axes into within-family axes.
+    Generic mapping:
+      - brightness lower/raise -> L below/above
+      - saturation/vibrancy lower/raise -> C below/above
+
+    IMPORTANT: quantiles must exist in label_distributions; we snap to _ALLOWED_Q.
+    """
+    if not nlp_constraints:
+        return []
+
+    specs: list[FamilyConstraintSpec] = []
+
+    def _strength_params(strength: str, direction: str):
+        s = (strength or "med").lower()
+        d = (direction or "").lower()
+
+        s_w = {"weak": 0.6, "med": 0.85, "strong": 1.0}.get(s, 0.85)
+
+        # these are *targets*; will be snapped to allowed quantiles
+        if d in {"raise", "higher", "up", "increase"}:
+            if s == "weak":
+                q_lo, q_hi = 0.45, 0.65
+            elif s == "strong":
+                q_lo, q_hi = 0.60, 0.85
+            else:
+                q_lo, q_hi = 0.50, 0.75
+        else:
+            if s == "weak":
+                q_lo, q_hi = 0.35, 0.55
+            elif s == "strong":
+                q_lo, q_hi = 0.15, 0.40
+            else:
+                q_lo, q_hi = 0.25, 0.50
+
+        q_lo_s = _snap_q(q_lo)
+        q_hi_s = _snap_q(q_hi)
+        if q_hi_s <= q_lo_s:
+            # enforce a positive band by pushing hi to the next allowed quantile if possible
+            idx = int(np.where(_ALLOWED_Q == q_lo_s)[0][0])
+            q_hi_s = float(_ALLOWED_Q[min(idx + 1, len(_ALLOWED_Q) - 1)])
+        return float(q_lo_s), float(q_hi_s), float(s_w)
+
+    for c in nlp_constraints:
+        axis = (_get_enum_value(_get(c, "axis", None)) or "").lower()
+        direction = (_get_enum_value(_get(c, "direction", None)) or "").lower()
+        strength = (_get_enum_value(_get(c, "strength", None)) or "med").lower()
+
+        if axis not in {"brightness", "saturation", "vibrancy"}:
+            continue
+        if direction not in {"lower", "raise"}:
+            continue
+
+        q_lo, q_hi, s_w = _strength_params(strength, direction)
+
+        if axis == "brightness":
+            specs.append(
+                FamilyConstraintSpec(
+                    axis="L",
+                    direction=("below" if direction == "lower" else "above"),
+                    strength=float(s_w),
+                    q_lo=float(q_lo),
+                    q_hi=float(q_hi),
+                )
+            )
+        else:
+            specs.append(
+                FamilyConstraintSpec(
+                    axis="C",
+                    direction=("below" if direction == "lower" else "above"),
+                    strength=float(s_w),
+                    q_lo=float(q_lo),
+                    q_hi=float(q_hi),
+                )
+            )
+
+    return specs
+
+
+def _anchor_inventory_coverage(inv: pd.DataFrame, anchor_lab: tuple[float, float, float], thr: float):
+    """
+    Coverage gate (diagnostic + guardrail):
+      - min_deltaE00 vs inventory
+      - count <= thr
+
+    This is NOT "inventory is truth"; it is "can this dataset support this anchor".
+    """
+    if inv is None or inv.empty:
+        return np.inf, 0
+    if not {"L_lab", "a_lab", "b_lab"}.issubset(inv.columns):
+        return np.inf, 0
+
+    L0, a0, b0 = map(float, anchor_lab)
+    L = inv["L_lab"].to_numpy(float)
+    a = inv["a_lab"].to_numpy(float)
+    b = inv["b_lab"].to_numpy(float)
+    m = np.isfinite(L) & np.isfinite(a) & np.isfinite(b)
+    if not np.any(m):
+        return np.inf, 0
+
+    d = np.full(len(inv), np.inf, float)
+    d[m] = delta_e_ciede2000(L[m], a[m], b[m], L0, a0, b0)
+
+    mn = float(np.min(d))
+    n = int(np.sum(d <= float(thr)))
+    return mn, n
+
+
+# =============================================================================
+# ANCHOR-ONLY API (no scoring, no inventory)
+# =============================================================================
+
+
+def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
+    """
+    Anchor-only resolution for "plain colors" debugging.
+    Returns a dict with anchor_hex, anchor_lab, and minimal NLP context.
+
+    NOTE:
+      - Uses SA_ANCHOR_SOURCE ('lexicon' default) to prevent polluted anchors.
+      - Does NOT score / does NOT touch inventory.
+    """
+    nlp_res = interpret_nlp(text, debug=debug)
+    has_color = _has_color_like_mention(nlp_res)
+
+    seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
+    anchor_lab, anchor_hex = _anchor_from_nlp(nlp_res)
+
+    if anchor_hex is None:
+        anchor_hex = seed_hex_nlp
+    if anchor_lab is None and isinstance(seed_hex_nlp, str):
+        anchor_lab = _hex_to_lab(seed_hex_nlp)
+
+    out = {
+        "text": text,
+        "has_color": bool(has_color),
+        "anchor_source": _anchor_source_mode(),
+        "anchor_hex": anchor_hex,
+        "anchor_lab": anchor_lab,
+    }
+
+    if debug:
+        print("\n[ANCHOR-ONLY]")
+        print(f"  text={text!r}")
+        print(f"  has_color={has_color}")
+        print(f"  anchor_source={out['anchor_source']!r}")
+        print(f"  anchor_hex={anchor_hex}  anchor_lab={anchor_lab}")
+
+    return out
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -262,6 +713,10 @@ def recommend_from_text(
     lambda_preference: float = 0.0,
     debug: bool = False,
 ) -> pd.DataFrame:
+    """
+    Recommendation mode (scoring).
+    If you want only anchors (no pool, no scoring), call resolve_anchor_from_text().
+    """
     if assets is None:
         assets = load_default_assets()
 
@@ -275,34 +730,64 @@ def recommend_from_text(
     has_color = _has_color_like_mention(nlp_res)
 
     seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
-    anchor_lab = _anchor_lab_from_nlp(nlp_res)
+    anchor_lab, anchor_hex = _anchor_from_nlp(nlp_res)
+    if anchor_hex is None:
+        anchor_hex = seed_hex_nlp
     if anchor_lab is None and isinstance(seed_hex_nlp, str):
         anchor_lab = _hex_to_lab(seed_hex_nlp)
 
+    anchor_eff = anchor_lab
+
     # ==========================
-    # PHASE A — strict pool
+    # PHASE A — strict pool (+ hue-family fallback)
     # ==========================
     if has_color and anchor_lab is not None:
         p = params_from_env()
-        df_pool = hard_color_pool(inv, anchor_lab=anchor_lab, params=p)
 
-        # compute cap (does not break purity)
+        # determine de00 threshold used by pool (matches hard_color_pool logic choice)
+        aC_raw = float(np.hypot(float(anchor_lab[1]), float(anchor_lab[2])))
+        thr_used = float(p.de00_max_neutral if aC_raw < float(p.neutral_anchor_c_max) else p.de00_max)
+
+        # coverage gate: if dataset has 0 support at thr, pool will be empty anyway
+        min_de, n_support = _anchor_inventory_coverage(inv, tuple(map(float, anchor_lab)), thr_used)
+
+        inv_eff, anchor_eff, fb_dbg = _domain_pool_and_anchor(inv, anchor_lab=tuple(anchor_lab), anchor_hex=anchor_hex)
+        df_pool = hard_color_pool(inv_eff, anchor_lab=anchor_eff, params=p)
+
         if pool_cap > 0 and len(df_pool) > pool_cap:
             df_pool = df_pool.head(pool_cap).copy()
 
         if debug:
-            aC = float(np.hypot(float(anchor_lab[1]), float(anchor_lab[2])))
-            thr_used = float(p.de00_max_neutral if aC < float(p.neutral_anchor_c_max) else p.de00_max)
+            aC = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
             print("\n[PHASE A]")
             print(f"  text={text!r}")
-            print(f"  has_color={has_color}  anchor_lab={anchor_lab}  anchor_C={aC:.2f}")
-            print(f"  de00_thr={thr_used:.2f}  pool_cap={pool_cap}  pool_n={len(df_pool)}  inv_n={len(inv)}")
+            print(f"  has_color={has_color}")
+            print(
+                f"  anchor_source={_anchor_source_mode()!r}  "
+                f"anchor_lab_raw={anchor_lab}  anchor_hex={anchor_hex}  "
+                f"anchor_lab_eff={anchor_eff}  anchor_C_eff={aC:.2f}"
+            )
+            print(
+                f"  hue_fallback_used={bool(fb_dbg.get('fallback_used'))}"
+                f"  hue_source={fb_dbg.get('hue_source')}"
+                f"  hue_band={_HUE_FALLBACK_BAND_DEG}  chroma_q={_HUE_FALLBACK_CHROMA_Q}"
+            )
+            if fb_dbg.get("fallback_used"):
+                h0 = fb_dbg.get("H0")
+                if h0 is not None:
+                    print(f"  hue_H0={float(h0):.2f}  cand_n={fb_dbg.get('cand_n')}  cthr={fb_dbg.get('cthr')}")
+                else:
+                    print(f"  hue_H0=None  cand_n={fb_dbg.get('cand_n')}  cthr={fb_dbg.get('cthr')}")
+            print(
+                f"  de00_thr={thr_used:.2f}  pool_cap={pool_cap}  pool_n={len(df_pool)}  "
+                f"inv_n={len(inv)}  inv_eff_n={len(inv_eff)}"
+            )
+            print(f"  coverage_gate: min_de00={min_de:.2f}  n_support<=thr={n_support}")
 
-        # strict contract: can be empty, and that's OK
         if df_pool.empty:
+            # No candidates under the color pool definition: return empty (correct behavior).
             return df_pool
     else:
-        # not a color query: just compute-cap (not Phase A)
         df_pool = inv.head(pool_cap).copy()
         if debug:
             print("\n[PHASE A]")
@@ -311,17 +796,57 @@ def recommend_from_text(
             print(f"  pool_cap={pool_cap}  pool_n={len(df_pool)}  inv_n={len(inv)}")
 
     # ==========================
-    # Phase B scoring (unchanged)
+    # PHASE B — scoring
     # ==========================
-    query = QuerySpec(anchor_lab=anchor_lab)
+    nlp_constraints = tuple(_get(nlp_res, "constraints", ()) or ())
+    query = QuerySpec(anchor_lab=anchor_eff, constraints=nlp_constraints)
+
+    if debug and nlp_constraints:
+        print("\n[PHASE B][CONSTRAINTS]")
+        for c in nlp_constraints:
+            axis = _get_enum_value(_get(c, "axis", None))
+            direction = _get_enum_value(_get(c, "direction", None))
+            strength = _get_enum_value(_get(c, "strength", None))
+            evidence = _get(c, "evidence", None)
+            meta = _get(c, "meta", None)
+            print(f"  axis={axis} dir={direction} strength={strength} evidence={evidence!r} meta={meta}")
+
+    # attach naming probs (chip_hex -> p_<label>)
+    df_pool = _attach_naming_probs(df_pool)
+
+    # build within-family constraints from NLP + distributions
+    dists = _load_family_label_distributions()
+    family_label = _first_family_label_from_nlp(nlp_res, dists=dists) if has_color else None
+    family_specs = _family_specs_from_nlp(nlp_constraints) if (family_label is not None) else []
+
+    if debug:
+        print("\n[PHASE B][FAMILY-CONSTRAINTS]")
+        print(f"  family_label={family_label!r}")
+        print(f"  specs_n={len(family_specs)}")
+        if family_label is not None:
+            pcol = f"p_{family_label}"
+            print(
+                f"  pcol_present={pcol in df_pool.columns}  "
+                f"p_min={_FAMILY_P_MIN}  p_hi={_FAMILY_P_HI}  floor={_FAMILY_FLOOR}"
+            )
+            if family_specs:
+                for s in family_specs:
+                    print(f"   - {s.axis}:{s.direction} q_lo={s.q_lo} q_hi={s.q_hi} strength={s.strength}")
+
     scored = score_shades(
         df_pool,
-        None,
         query,
         lambda_constraints=float(lambda_constraints),
         lambda_preference=float(lambda_preference),
         calibration=assets.calibration,
         preference_weights=getattr(assets, "preference_weights", None),
+        # within-family (only applied if label+specs exist)
+        constraint_label=family_label,
+        constraint_specs=family_specs,
+        label_distributions=dists if dists else None,
+        constraint_p_min=float(_FAMILY_P_MIN),
+        constraint_p_hi=float(_FAMILY_P_HI),
+        constraint_floor=float(_FAMILY_FLOOR),
     )
 
     scored = _restore_lab_cols(df_pool, scored)
@@ -333,4 +858,4 @@ def recommend_from_text(
     return scored.sort_values(score_col, ascending=False).head(int(topk)).copy()
 
 
-__all__ = ["recommend_from_text"]
+__all__ = ["recommend_from_text", "resolve_anchor_from_text"]
