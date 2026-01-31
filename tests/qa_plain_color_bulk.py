@@ -13,7 +13,7 @@ EXTREME_Q = 0.10
 ANGLE_MED_FAIL = 35.0  # degrees
 
 
-# ---------- color helpers (no external deps) ----------
+# ---------- colors helpers (no external deps) ----------
 
 def _hex_to_rgb01(hx: str):
     s = hx.strip().lstrip("#")
@@ -138,7 +138,7 @@ def main():
     out = pd.DataFrame(
         rows,
         columns=[
-            "color",
+            "colors",
             "status",
             "C_extreme",
             "L_extreme",

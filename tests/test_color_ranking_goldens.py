@@ -26,7 +26,7 @@ def _item_key(df: pd.DataFrame) -> pd.Series:
 
 def test_color_ranking_goldens() -> None:
     """
-    Golden test for color ranking.
+    Golden test for colors ranking.
 
     Contract:
     - Uses FIXED scoring calibration

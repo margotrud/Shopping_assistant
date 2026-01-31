@@ -20,7 +20,7 @@ COLORS = {
     "berry": "#241570",
 }
 
-# --- color utils (NO external deps) ---
+# --- colors utils (NO external deps) ---
 def hex_to_rgb01(h):
     h = h.lstrip("#")
     return (
