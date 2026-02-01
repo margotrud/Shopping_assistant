@@ -33,7 +33,7 @@ _MAX_POOL_TOPN = 2000
 
 # Hue-family fallback (generic; restrict pool for low-chroma anchors; MUST NOT rewrite anchor)
 _HUE_FALLBACK_BAND_DEG = 28.0
-_HUE_FALLBACK_MIN_POOL_N = 120  # used as "support is weak" threshold (coverage gate)
+_HUE_FALLBACK_MIN_POOL_N = 20  # used as "support is weak" threshold (coverage gate)
 _HUE_FALLBACK_CHROMA_Q = 0.50  # kept for debug/telemetry; not used to rewrite anchor
 _HUE_FALLBACK_ANCHOR_C_MIN = 55.0
 
@@ -68,6 +68,11 @@ _NAMING_POOL_P_MIN = 0.20
 _DOMAIN_ANCHOR_P_MIN = 0.55
 _DOMAIN_ANCHOR_MIN_N = 40
 _DOMAIN_ANCHOR_TOPN = 250
+
+# Domain-anchor FIX (ONLY for these labels; must not impact "perfect" colors)
+_DOMAIN_ANCHOR_FIX_LABELS = {"purple", "violet", "brown"}
+_DOMAIN_ANCHOR_HUE_BAND_DEG = 28.0  # generic hue window around reference hue (HSV)
+_DOMAIN_ANCHOR_HUE_TRIM_Q = 0.10  # generic trimming (used for brown only)
 
 # =============================================================================
 # PRODUCT ELIGIBILITY FILTER
@@ -375,6 +380,38 @@ def _restore_lab_cols(df_pool: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFra
 def _circ_dist_deg(a_deg: np.ndarray, b0_deg: float) -> np.ndarray:
     d = (a_deg - float(b0_deg) + 180.0) % 360.0 - 180.0
     return np.abs(d)
+
+
+def _circular_diff_deg(h: np.ndarray, h0: float) -> np.ndarray:
+    return (h - float(h0) + 180.0) % 360.0 - 180.0
+
+
+def _circular_abs_diff_deg(h: np.ndarray, h0: float) -> np.ndarray:
+    return np.abs(_circular_diff_deg(h, h0))
+
+
+def _robust_medoid_lab(sub: pd.DataFrame, w: np.ndarray) -> tuple[float, float, float] | None:
+    # pick the point minimizing weighted squared distance in (a,b) primarily (cheap + stable)
+    if sub is None or sub.empty:
+        return None
+    L = pd.to_numeric(sub["L_lab"], errors="coerce").to_numpy(float)
+    a = pd.to_numeric(sub["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(sub["b_lab"], errors="coerce").to_numpy(float)
+    ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(w) & (w > 0)
+    if not np.any(ok):
+        return None
+    L, a, b, w = L[ok], a[ok], b[ok], w[ok]
+    # normalize weights
+    w = w / (np.sum(w) + 1e-12)
+
+    # medoid in (a,b) space (fast O(n^2) ok for <=250)
+    A = np.vstack([a, b]).T
+    # squared distances
+    D = np.sum((A[:, None, :] - A[None, :, :]) ** 2, axis=2)
+    # weighted sum of distances from each candidate to all points
+    cost = D @ w
+    i = int(np.argmin(cost))
+    return (float(L[i]), float(a[i]), float(b[i]))
 
 
 def _ensure_hue_rgb_deg(inv: pd.DataFrame) -> pd.DataFrame:
@@ -726,50 +763,123 @@ def _is_plain_color_query(nlp_res) -> bool:
     return _has_color_like_mention(nlp_res) and (len(cons) == 0)
 
 
-def _domain_anchor_from_naming_probs(inv: pd.DataFrame, *, label: str, p_min: float) -> tuple[float, float, float] | None:
-    """
-    Generic domain anchor:
-      - uses p_<label> from chips naming probs
-      - selects either >= p_min or topN by probability
-      - returns weighted centroid in Lab
-    """
+def _domain_anchor_from_naming_probs(
+    inv: pd.DataFrame,
+    *,
+    label: str,
+    p_min: float,
+    anchor_lab_lexicon: tuple[float, float, float] | None = None,  # NEW
+    anchor_hex: str | None = None,  # NEW (optional)
+) -> tuple[float, float, float] | None:
     if inv is None or inv.empty:
         return None
     if not {"L_lab", "a_lab", "b_lab", "chip_hex"}.issubset(inv.columns):
         return None
 
-    pcol = f"p_{str(label).lower()}"
+    label_l = str(label).lower()
+    pcol = f"p_{label_l}"
     if pcol not in inv.columns:
         return None
 
-    w = pd.to_numeric(inv[pcol], errors="coerce").fillna(0.0).to_numpy(float)
+    w_all = pd.to_numeric(inv[pcol], errors="coerce").fillna(0.0).to_numpy(float)
 
-    m = w >= float(p_min)
+    m = w_all >= float(p_min)
     if int(np.sum(m)) < int(_DOMAIN_ANCHOR_MIN_N):
-        idx = np.argsort(-w)
-        idx = idx[w[idx] > 0.0][: int(_DOMAIN_ANCHOR_TOPN)]
+        idx = np.argsort(-w_all)
+        idx = idx[w_all[idx] > 0.0][: int(_DOMAIN_ANCHOR_TOPN)]
         if len(idx) < int(_DOMAIN_ANCHOR_MIN_N):
             return None
         sub = inv.iloc[idx].copy()
-        wsub = w[idx]
+        w = w_all[idx]
     else:
         sub = inv.loc[m].copy()
-        wsub = w[m]
+        w = w_all[m]
 
-    L = pd.to_numeric(sub["L_lab"], errors="coerce").to_numpy(float)
-    a = pd.to_numeric(sub["a_lab"], errors="coerce").to_numpy(float)
-    b = pd.to_numeric(sub["b_lab"], errors="coerce").to_numpy(float)
-    ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(wsub) & (wsub > 0.0)
-    if not np.any(ok):
+    # ---------- DEFAULT PATH (unchanged) ----------
+    if label_l not in _DOMAIN_ANCHOR_FIX_LABELS:
+        L = pd.to_numeric(sub["L_lab"], errors="coerce").to_numpy(float)
+        a = pd.to_numeric(sub["a_lab"], errors="coerce").to_numpy(float)
+        b = pd.to_numeric(sub["b_lab"], errors="coerce").to_numpy(float)
+        ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(w) & (w > 0.0)
+        if not np.any(ok):
+            return None
+        ww = w[ok]
+        ww = ww / (np.sum(ww) + 1e-12)
+        return (float(np.sum(L[ok] * ww)), float(np.sum(a[ok] * ww)), float(np.sum(b[ok] * ww)))
+
+    # ---------- FIXED PATH (ONLY purple/violet/brown) ----------
+    # Use HSV hue computed from chip_hex (not Lab-hue) for band selection.
+    sub2 = _ensure_hue_rgb_deg(sub)
+    h = pd.to_numeric(sub2.get("_H_rgb_deg", pd.Series([np.nan] * len(sub2))), errors="coerce").to_numpy(float)
+
+    ok_h = np.isfinite(h) & np.isfinite(w) & (w > 0.0)
+    if not np.any(ok_h):
         return None
 
-    ww = wsub[ok]
+    ok_idx = np.where(ok_h)[0]
+    sub_ok = sub2.iloc[ok_idx].copy()
+    h_sub = h[ok_h].astype(float)
+    w_ok = w[ok_h].astype(float)
+
+    # reference hue:
+    #   1) anchor_hex HSV hue if available
+    #   2) hue of max-weight candidate (stable fallback)
+    h0 = _hex_to_hsv_h_deg(anchor_hex) if isinstance(anchor_hex, str) else None
+    if h0 is None:
+        j = int(np.argmax(w_ok))
+        hx = str(sub_ok.iloc[j].get("chip_hex", ""))
+        h0 = _hex_to_hsv_h_deg(hx) if hx else None
+    if h0 is None:
+        return None
+
+    hd = _circular_abs_diff_deg(h_sub, float(h0))
+    band = float(_DOMAIN_ANCHOR_HUE_BAND_DEG)
+
+    keep = hd <= band
+    if int(np.sum(keep)) < int(_DOMAIN_ANCHOR_MIN_N):
+        ord_idx = np.argsort(hd)
+        ord_idx = ord_idx[: max(int(_DOMAIN_ANCHOR_MIN_N), 1)]
+        sub_ok = sub_ok.iloc[ord_idx].copy()
+        w_ok = w_ok[ord_idx]
+        hd = hd[ord_idx]
+    else:
+        sel = np.where(keep)[0]
+        sub_ok = sub_ok.iloc[sel].copy()
+        w_ok = w_ok[keep]
+        hd = hd[keep]
+
+    # extra trim for brown: remove the farthest hue tail automatically (generic)
+    if label_l == "brown":
+        q = float(_DOMAIN_ANCHOR_HUE_TRIM_Q)
+        thr = float(np.quantile(hd, 1.0 - q)) if len(hd) else np.inf
+        keep2 = hd <= thr
+        if int(np.sum(keep2)) >= int(_DOMAIN_ANCHOR_MIN_N):
+            sel2 = np.where(keep2)[0]
+            sub_ok = sub_ok.iloc[sel2].copy()
+            w_ok = w_ok[keep2]
+            hd = hd[keep2]
+
+    # reweight by hue distance (generic)
+    sigma = max(float(_DOMAIN_ANCHOR_HUE_BAND_DEG) / 2.0, 1e-6)
+    w2 = w_ok * np.exp(-((hd / sigma) ** 2))
+    if not np.any(np.isfinite(w2)) or float(np.sum(w2)) <= 0.0:
+        w2 = w_ok
+
+    L = pd.to_numeric(sub_ok["L_lab"], errors="coerce").to_numpy(float)
+    a = pd.to_numeric(sub_ok["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(sub_ok["b_lab"], errors="coerce").to_numpy(float)
+    ok2 = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(w2) & (w2 > 0.0)
+    if not np.any(ok2):
+        return None
+    ww = w2[ok2]
     ww = ww / (np.sum(ww) + 1e-12)
 
-    L0 = float(np.sum(L[ok] * ww))
-    a0 = float(np.sum(a[ok] * ww))
-    b0 = float(np.sum(b[ok] * ww))
-    return (L0, a0, b0)
+    anch = (
+        float(np.sum(L[ok2] * ww)),
+        float(np.sum(a[ok2] * ww)),
+        float(np.sum(b[ok2] * ww)),
+    )
+    return anch
 
 
 def _snap_q(q: float) -> float:
@@ -885,6 +995,22 @@ def _anchor_inventory_coverage(inv: pd.DataFrame, anchor_lab: tuple[float, float
     return mn, n
 
 
+def _ensure_de00_anchor_col(df_pool: pd.DataFrame, anchor_lab: tuple[float, float, float]) -> pd.DataFrame:
+    """
+    Ensure df_pool has '_de00_anchor' for debugging/inspection, regardless of pool builder.
+    """
+    if df_pool is None or df_pool.empty:
+        return df_pool
+    if "_de00_anchor" in df_pool.columns:
+        return df_pool
+    if not {"L_lab", "a_lab", "b_lab"}.issubset(df_pool.columns):
+        return df_pool
+    d = _de00_to_anchor(df_pool, anchor_lab)
+    out = df_pool.copy()
+    out["_de00_anchor"] = d
+    return out
+
+
 # =============================================================================
 # ANCHOR-ONLY API (no scoring, no inventory)
 # =============================================================================
@@ -969,13 +1095,21 @@ def resolve_effective_anchor_from_text(
     inv = _attach_naming_probs(inv)
 
     dists = _load_family_label_distributions()
-    family_label, in_dists = _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+    family_label, in_dists = (
+        _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+    )
 
     anchor_eff = anchor_lab
     used_domain = False
 
     if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
-        dom = _domain_anchor_from_naming_probs(inv, label=family_label, p_min=float(_DOMAIN_ANCHOR_P_MIN))
+        dom = _domain_anchor_from_naming_probs(
+            inv,
+            label=family_label,
+            p_min=float(_DOMAIN_ANCHOR_P_MIN),
+            anchor_lab_lexicon=tuple(map(float, anchor_lab)) if anchor_lab is not None else None,
+            anchor_hex=anchor_hex,
+        )
         if dom is not None:
             anchor_eff = dom
             used_domain = True
@@ -1050,11 +1184,19 @@ def recommend_from_text(
 
     # Precompute label_distributions + family label once (reuse later; avoid inconsistencies)
     dists = _load_family_label_distributions()
-    family_label, family_in_dists = _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+    family_label, family_in_dists = (
+        _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+    )
 
     # Domain anchor for plain color queries: replace anchor_eff (pool+scoring) with dataset-driven centroid
     if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
-        dom = _domain_anchor_from_naming_probs(inv, label=family_label, p_min=float(_DOMAIN_ANCHOR_P_MIN))
+        dom = _domain_anchor_from_naming_probs(
+            inv,
+            label=family_label,
+            p_min=float(_DOMAIN_ANCHOR_P_MIN),
+            anchor_lab_lexicon=tuple(map(float, anchor_lab)) if anchor_lab is not None else None,
+            anchor_hex=anchor_hex,
+        )
         if dom is not None:
             anchor_eff = dom
             if debug:
@@ -1212,6 +1354,10 @@ def recommend_from_text(
             print(f"  text={text!r}")
             print(f"  has_color={has_color}  anchor_lab={anchor_lab}")
             print(f"  pool_cap={pool_cap}  pool_n={len(df_pool)}  inv_n={len(inv)}")
+
+    # Always add _de00_anchor for inspection (fixes KeyError in your debug print scripts)
+    if has_color and anchor_eff is not None:
+        df_pool = _ensure_de00_anchor_col(df_pool, tuple(map(float, anchor_eff)))
 
     # ==========================
     # PHASE B — scoring
