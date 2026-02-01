@@ -33,7 +33,7 @@ _MAX_POOL_TOPN = 2000
 
 # Hue-family fallback (generic; restrict pool for low-chroma anchors; MUST NOT rewrite anchor)
 _HUE_FALLBACK_BAND_DEG = 28.0
-_HUE_FALLBACK_MIN_POOL_N = 120  # kept for debug/telemetry; not used to rewrite anchor
+_HUE_FALLBACK_MIN_POOL_N = 120  # used as "support is weak" threshold (coverage gate)
 _HUE_FALLBACK_CHROMA_Q = 0.50  # kept for debug/telemetry; not used to rewrite anchor
 _HUE_FALLBACK_ANCHOR_C_MIN = 55.0
 
@@ -49,6 +49,25 @@ _FAMILY_FLOOR = 0.35
 
 # quantiles supported by label_distributions (prevents KeyError like 0.65 missing)
 _ALLOWED_Q = np.array([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95], dtype=float)
+
+# Adaptive pool fallback when strict ΔE yields empty pool
+_POOL_FALLBACK_MIN_N = 10
+_POOL_FALLBACK_DE00_STEPS = (0.0, 2.0, 4.0, 8.0, 12.0)  # added to thr_used
+_POOL_FALLBACK_DE00_CAP = 30.0
+
+# High-chroma hue-band fallback when ΔE cannot find any support
+_HUE_FAILSAFE_BAND_DEG = 32.0
+
+# Naming-prob pool fallback (when anchor has weak dataset support at strict ΔE)
+# No hardcoding: we use p_<label> if it exists in the parquet.
+_NAMING_POOL_MIN_N = 20
+_NAMING_POOL_TOPN = 180
+_NAMING_POOL_P_MIN = 0.20
+
+# Domain anchor (dataset-driven) using naming probs p_<label>
+_DOMAIN_ANCHOR_P_MIN = 0.55
+_DOMAIN_ANCHOR_MIN_N = 40
+_DOMAIN_ANCHOR_TOPN = 250
 
 # =============================================================================
 # PRODUCT ELIGIBILITY FILTER
@@ -432,7 +451,6 @@ def _domain_pool_and_anchor(
         hue_mask = np.isfinite(hdist) & (hdist <= float(hue_band_deg))
         cand = inv2.loc[hue_mask].copy()
     else:
-        # fallback to Lab hue column if present
         if "H_lab_deg" not in inv2.columns:
             return inv, anchor_lab, dbg
         hdist = _circ_dist_deg(inv2["H_lab_deg"].to_numpy(float), float(H0))
@@ -442,14 +460,97 @@ def _domain_pool_and_anchor(
     if cand.empty:
         return inv, anchor_lab, dbg
 
-    # Do NOT rewrite anchor based on cand stats.
     dbg["fallback_used"] = True
     dbg["anchor_lab_eff"] = tuple(map(float, anchor_lab))
     return cand, tuple(map(float, anchor_lab)), dbg
 
 
+def _de00_to_anchor(inv: pd.DataFrame, anchor_lab: tuple[float, float, float]) -> np.ndarray:
+    L0, a0, b0 = map(float, anchor_lab)
+    L = inv["L_lab"].to_numpy(float)
+    a = inv["a_lab"].to_numpy(float)
+    b = inv["b_lab"].to_numpy(float)
+    m = np.isfinite(L) & np.isfinite(a) & np.isfinite(b)
+    d = np.full(len(inv), np.inf, float)
+    if np.any(m):
+        d[m] = delta_e_ciede2000(L[m], a[m], b[m], L0, a0, b0)
+    return d
+
+
+def _pool_by_de00_threshold(inv: pd.DataFrame, d: np.ndarray, thr: float) -> pd.DataFrame:
+    m = np.isfinite(d) & (d <= float(thr))
+    if not np.any(m):
+        return inv.iloc[0:0].copy()
+    out = inv.loc[m].copy()
+    out["_de00_anchor"] = d[m]
+    out = out.sort_values("_de00_anchor", ascending=True)
+    return out
+
+
+def _adaptive_de00_pool(
+    inv: pd.DataFrame,
+    *,
+    anchor_lab: tuple[float, float, float],
+    thr_base: float,
+    min_n: int,
+    cap: float,
+) -> tuple[pd.DataFrame, dict]:
+    dbg = {"adaptive_used": False, "thr_base": float(thr_base), "thr_final": None, "pool_n": 0}
+    if inv is None or inv.empty:
+        return inv, dbg
+
+    d = _de00_to_anchor(inv, anchor_lab)
+
+    best = inv.iloc[0:0].copy()
+    for step in _POOL_FALLBACK_DE00_STEPS:
+        thr = float(min(cap, float(thr_base) + float(step)))
+        cand = _pool_by_de00_threshold(inv, d, thr)
+        if len(cand) > 0:
+            best = cand
+            dbg["thr_final"] = thr
+            dbg["pool_n"] = int(len(cand))
+        if len(cand) >= int(min_n):
+            dbg["adaptive_used"] = (step != 0.0)
+            return cand, dbg
+
+    if len(best) > 0:
+        dbg["adaptive_used"] = True
+        return best, dbg
+
+    if np.isfinite(d).any():
+        idx = np.argsort(d)
+        idx = idx[np.isfinite(d[idx])]
+        idx = idx[: max(int(min_n), 1)]
+        out = inv.iloc[idx].copy()
+        out["_de00_anchor"] = d[idx]
+        out = out.sort_values("_de00_anchor", ascending=True)
+        dbg["adaptive_used"] = True
+        dbg["thr_final"] = None
+        dbg["pool_n"] = int(len(out))
+        return out, dbg
+
+    return inv.iloc[0:0].copy(), dbg
+
+
+def _hue_band_subset(
+    inv: pd.DataFrame, *, anchor_hex: str | None, anchor_lab: tuple[float, float, float], band_deg: float
+):
+    inv2 = _ensure_hue_rgb_deg(inv)
+    H0 = _hex_to_hsv_h_deg(anchor_hex) if isinstance(anchor_hex, str) else None
+    if H0 is None:
+        _, a0, b0 = map(float, anchor_lab)
+        H0 = float(np.degrees(np.arctan2(b0, a0)) % 360.0)
+
+    if "_H_rgb_deg" in inv2.columns and pd.to_numeric(inv2["_H_rgb_deg"], errors="coerce").notna().any():
+        hvals = pd.to_numeric(inv2["_H_rgb_deg"], errors="coerce").to_numpy(float)
+        hdist = _circ_dist_deg(hvals, float(H0))
+        m = np.isfinite(hdist) & (hdist <= float(band_deg))
+        return inv2.loc[m].copy(), {"H0": float(H0), "band": float(band_deg), "cand_n": int(np.sum(m))}
+    return inv2.iloc[0:0].copy(), {"H0": float(H0), "band": float(band_deg), "cand_n": 0}
+
+
 # =============================================================================
-# NEW: naming probs + label distributions (cached)
+# naming probs + label distributions (cached)
 # =============================================================================
 
 
@@ -514,15 +615,10 @@ def _attach_naming_probs(df: pd.DataFrame) -> pd.DataFrame:
     return out.merge(probs, on="chip_hex", how="left")
 
 
-def _first_family_label_from_nlp(nlp_res, *, dists: dict) -> str | None:
+def _first_color_token_from_nlp(nlp_res) -> str | None:
     """
-    Choose a family label from NLP mentions if it exists in label_distributions keys.
-    No aliasing/hardcode. If it doesn't match, return None.
+    First color token from NLP mentions (canonical/raw).
     """
-    if not dists:
-        return None
-
-    keys = set(str(k).lower() for k in dists.keys())
     for m in _get(nlp_res, "mentions", ()) or ():
         kind = (_get_enum_value(_get(m, "kind", None)) or "").lower()
         if kind != "colors":
@@ -533,11 +629,147 @@ def _first_family_label_from_nlp(nlp_res, *, dists: dict) -> str | None:
 
         canon = str(_get(m, "canonical", "") or "").strip().lower()
         raw = str(_get(m, "raw", "") or "").strip().lower()
-        for s in (canon, raw):
-            if s and s in keys:
-                return s
-
+        return canon or raw or None
     return None
+
+
+def _naming_prob_label_supported(label: str, *, inv_with_probs: pd.DataFrame | None = None) -> bool:
+    """
+    Generic support check for label->p_<label> existence.
+    No aliasing/hardcoding.
+    """
+    if not isinstance(label, str) or not label:
+        return False
+    pcol = f"p_{label.strip().lower()}"
+
+    if inv_with_probs is not None and isinstance(inv_with_probs, pd.DataFrame) and (pcol in inv_with_probs.columns):
+        return True
+
+    probs = _load_chips_naming_probs()
+    if probs.empty:
+        return False
+    return pcol in probs.columns
+
+
+def _pool_by_naming_prob(
+    inv: pd.DataFrame,
+    *,
+    label: str,
+    pool_topn: int = _NAMING_POOL_TOPN,
+    p_min: float = _NAMING_POOL_P_MIN,
+    min_n: int = _NAMING_POOL_MIN_N,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Build candidate pool by p_<label> if present.
+    No aliasing/hardcode: label must match a parquet p_* column.
+    Returns (pool, debug_dict).
+    """
+    dbg = {"used": False, "label": label, "pcol": None, "pool_n": 0, "p_min": float(p_min), "topn": int(pool_topn)}
+    if inv is None or inv.empty:
+        return inv, dbg
+    if not isinstance(label, str) or not label:
+        return inv.iloc[0:0].copy(), dbg
+
+    pcol = f"p_{label.strip().lower()}"
+    dbg["pcol"] = pcol
+
+    inv2 = _attach_naming_probs(inv)
+    if pcol not in inv2.columns:
+        return inv2.iloc[0:0].copy(), dbg
+
+    tmp = inv2.copy()
+    tmp[pcol] = pd.to_numeric(tmp[pcol], errors="coerce").fillna(0.0)
+    tmp = tmp.sort_values(pcol, ascending=False)
+
+    cand = tmp.loc[tmp[pcol] >= float(p_min)].copy()
+    if len(cand) < int(min_n):
+        cand = tmp.head(int(pool_topn)).copy()
+
+    dbg["used"] = True
+    dbg["pool_n"] = int(len(cand))
+    return cand, dbg
+
+
+def _first_family_label_from_nlp(
+    nlp_res,
+    *,
+    dists: dict,
+    inv_with_probs: pd.DataFrame | None = None,
+) -> tuple[str | None, bool]:
+    """
+    Returns (family_label, label_in_distributions).
+
+    Priority:
+      1) if token matches label_distributions key -> use it (label_in_distributions=True)
+      2) else if token has p_<token> column available -> use it (label_in_distributions=False)
+      3) else None
+    No aliasing/hardcode.
+    """
+    tok = _first_color_token_from_nlp(nlp_res)
+    if not tok:
+        return None, False
+
+    tok = tok.strip().lower()
+    if dists:
+        keys = set(str(k).lower() for k in dists.keys())
+        if tok in keys:
+            return tok, True
+
+    if _naming_prob_label_supported(tok, inv_with_probs=inv_with_probs):
+        return tok, False
+
+    return None, False
+
+
+def _is_plain_color_query(nlp_res) -> bool:
+    cons = tuple(_get(nlp_res, "constraints", ()) or ())
+    return _has_color_like_mention(nlp_res) and (len(cons) == 0)
+
+
+def _domain_anchor_from_naming_probs(inv: pd.DataFrame, *, label: str, p_min: float) -> tuple[float, float, float] | None:
+    """
+    Generic domain anchor:
+      - uses p_<label> from chips naming probs
+      - selects either >= p_min or topN by probability
+      - returns weighted centroid in Lab
+    """
+    if inv is None or inv.empty:
+        return None
+    if not {"L_lab", "a_lab", "b_lab", "chip_hex"}.issubset(inv.columns):
+        return None
+
+    pcol = f"p_{str(label).lower()}"
+    if pcol not in inv.columns:
+        return None
+
+    w = pd.to_numeric(inv[pcol], errors="coerce").fillna(0.0).to_numpy(float)
+
+    m = w >= float(p_min)
+    if int(np.sum(m)) < int(_DOMAIN_ANCHOR_MIN_N):
+        idx = np.argsort(-w)
+        idx = idx[w[idx] > 0.0][: int(_DOMAIN_ANCHOR_TOPN)]
+        if len(idx) < int(_DOMAIN_ANCHOR_MIN_N):
+            return None
+        sub = inv.iloc[idx].copy()
+        wsub = w[idx]
+    else:
+        sub = inv.loc[m].copy()
+        wsub = w[m]
+
+    L = pd.to_numeric(sub["L_lab"], errors="coerce").to_numpy(float)
+    a = pd.to_numeric(sub["a_lab"], errors="coerce").to_numpy(float)
+    b = pd.to_numeric(sub["b_lab"], errors="coerce").to_numpy(float)
+    ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(wsub) & (wsub > 0.0)
+    if not np.any(ok):
+        return None
+
+    ww = wsub[ok]
+    ww = ww / (np.sum(ww) + 1e-12)
+
+    L0 = float(np.sum(L[ok] * ww))
+    a0 = float(np.sum(a[ok] * ww))
+    b0 = float(np.sum(b[ok] * ww))
+    return (L0, a0, b0)
 
 
 def _snap_q(q: float) -> float:
@@ -566,7 +798,6 @@ def _family_specs_from_nlp(nlp_constraints: Sequence[object]) -> list[FamilyCons
 
         s_w = {"weak": 0.6, "med": 0.85, "strong": 1.0}.get(s, 0.85)
 
-        # these are *targets*; will be snapped to allowed quantiles
         if d in {"raise", "higher", "up", "increase"}:
             if s == "weak":
                 q_lo, q_hi = 0.45, 0.65
@@ -585,7 +816,6 @@ def _family_specs_from_nlp(nlp_constraints: Sequence[object]) -> list[FamilyCons
         q_lo_s = _snap_q(q_lo)
         q_hi_s = _snap_q(q_hi)
         if q_hi_s <= q_lo_s:
-            # enforce a positive band by pushing hi to the next allowed quantile if possible
             idx = int(np.where(_ALLOWED_Q == q_lo_s)[0][0])
             q_hi_s = float(_ALLOWED_Q[min(idx + 1, len(_ALLOWED_Q) - 1)])
         return float(q_lo_s), float(q_hi_s), float(s_w)
@@ -698,6 +928,83 @@ def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
     return out
 
 
+def resolve_effective_anchor_from_text(
+    text: str,
+    *,
+    assets: AssetBundle | None = None,
+    debug: bool = False,
+) -> dict:
+    """
+    Resolve BOTH:
+      - lexicon anchor (same as resolve_anchor_from_text)
+      - effective anchor used by recommend_from_text for plain-color queries
+        (domain anchor via naming probs p_<label> when available)
+
+    Returns:
+      {
+        anchor_hex,
+        anchor_lab_lexicon,
+        anchor_lab_effective,
+        has_color,
+        family_label,                 # naming-prob label if available (even if not in dists)
+        family_label_in_dists (bool), # only True when label_distributions supports it
+        used_domain_anchor (bool),
+      }
+    """
+    if assets is None:
+        assets = load_default_assets()
+
+    nlp_res = interpret_nlp(text, debug=debug)
+    has_color = _has_color_like_mention(nlp_res)
+
+    seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
+    anchor_lab, anchor_hex = _anchor_from_nlp(nlp_res)
+    if anchor_hex is None:
+        anchor_hex = seed_hex_nlp
+    if anchor_lab is None and isinstance(seed_hex_nlp, str):
+        anchor_lab = _hex_to_lab(seed_hex_nlp)
+
+    inv = assets.inventory.copy()
+    inv = _filter_invalid_products(inv)
+    inv = _attach_naming_probs(inv)
+
+    dists = _load_family_label_distributions()
+    family_label, in_dists = _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+
+    anchor_eff = anchor_lab
+    used_domain = False
+
+    if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
+        dom = _domain_anchor_from_naming_probs(inv, label=family_label, p_min=float(_DOMAIN_ANCHOR_P_MIN))
+        if dom is not None:
+            anchor_eff = dom
+            used_domain = True
+
+    out = {
+        "text": text,
+        "has_color": bool(has_color),
+        "anchor_source": _anchor_source_mode(),
+        "anchor_hex": anchor_hex,
+        "anchor_lab_lexicon": anchor_lab,
+        "anchor_lab_effective": anchor_eff,
+        "family_label": family_label,
+        "family_label_in_dists": bool(in_dists),
+        "used_domain_anchor": bool(used_domain),
+    }
+
+    if debug:
+        print("\n[ANCHOR-EFFECTIVE]")
+        print(f"  text={text!r}")
+        print(f"  has_color={has_color}")
+        print(f"  family_label={family_label!r}  in_dists={in_dists}")
+        print(f"  anchor_hex={anchor_hex}")
+        print(f"  anchor_lab_lexicon={anchor_lab}")
+        print(f"  anchor_lab_effective={anchor_eff}")
+        print(f"  used_domain_anchor={used_domain}")
+
+    return out
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -738,20 +1045,59 @@ def recommend_from_text(
 
     anchor_eff = anchor_lab
 
+    # Attach naming probs onto inventory once (needed for domain anchor + naming pool + family constraints)
+    inv = _attach_naming_probs(inv)
+
+    # Precompute label_distributions + family label once (reuse later; avoid inconsistencies)
+    dists = _load_family_label_distributions()
+    family_label, family_in_dists = _first_family_label_from_nlp(nlp_res, dists=dists, inv_with_probs=inv) if has_color else (None, False)
+
+    # Domain anchor for plain color queries: replace anchor_eff (pool+scoring) with dataset-driven centroid
+    if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
+        dom = _domain_anchor_from_naming_probs(inv, label=family_label, p_min=float(_DOMAIN_ANCHOR_P_MIN))
+        if dom is not None:
+            anchor_eff = dom
+            if debug:
+                print("\n[DOMAIN ANCHOR]")
+                print(f"  family_label={family_label!r} p_min={_DOMAIN_ANCHOR_P_MIN} in_dists={family_in_dists}")
+                print(f"  anchor_lab_lexicon={anchor_lab}")
+                print(f"  anchor_lab_domain ={anchor_eff}")
+
     # ==========================
-    # PHASE A — strict pool (+ hue-family fallback)
+    # PHASE A — strict pool (+ hue-family fallback) + failsafes
     # ==========================
-    if has_color and anchor_lab is not None:
+    if has_color and anchor_eff is not None:
         p = params_from_env()
 
-        # determine de00 threshold used by pool (matches hard_color_pool logic choice)
-        aC_raw = float(np.hypot(float(anchor_lab[1]), float(anchor_lab[2])))
+        aC_raw = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
         thr_used = float(p.de00_max_neutral if aC_raw < float(p.neutral_anchor_c_max) else p.de00_max)
 
-        # coverage gate: if dataset has 0 support at thr, pool will be empty anyway
-        min_de, n_support = _anchor_inventory_coverage(inv, tuple(map(float, anchor_lab)), thr_used)
+        # coverage gate BEFORE any restriction
+        min_de_all, n_support_all = _anchor_inventory_coverage(inv, tuple(map(float, anchor_eff)), thr_used)
 
-        inv_eff, anchor_eff, fb_dbg = _domain_pool_and_anchor(inv, anchor_lab=tuple(anchor_lab), anchor_hex=anchor_hex)
+        # only restrict by hue when dataset support is weak at the strict threshold
+        if n_support_all < int(_HUE_FALLBACK_MIN_POOL_N):
+            inv_eff, anchor_eff2, fb_dbg = _domain_pool_and_anchor(
+                inv,
+                anchor_lab=tuple(map(float, anchor_eff)),
+                anchor_hex=anchor_hex,
+            )
+        else:
+            inv_eff, anchor_eff2, fb_dbg = inv, tuple(map(float, anchor_eff)), {
+                "fallback_used": False,
+                "anchor_C": float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2]))),
+                "H0": None,
+                "cand_n": None,
+                "cthr": None,
+                "anchor_lab_eff": tuple(map(float, anchor_eff)),
+                "hue_source": None,
+            }
+
+        anchor_eff = anchor_eff2
+
+        # coverage gate AFTER restriction (this is what truly matters for pool)
+        min_de_eff, n_support_eff = _anchor_inventory_coverage(inv_eff, tuple(map(float, anchor_eff)), thr_used)
+
         df_pool = hard_color_pool(inv_eff, anchor_lab=anchor_eff, params=p)
 
         if pool_cap > 0 and len(df_pool) > pool_cap:
@@ -782,11 +1128,83 @@ def recommend_from_text(
                 f"  de00_thr={thr_used:.2f}  pool_cap={pool_cap}  pool_n={len(df_pool)}  "
                 f"inv_n={len(inv)}  inv_eff_n={len(inv_eff)}"
             )
-            print(f"  coverage_gate: min_de00={min_de:.2f}  n_support<=thr={n_support}")
+            print(f"  coverage_all: min_de00={min_de_all:.2f}  n_support<=thr={n_support_all}")
+            print(f"  coverage_eff: min_de00={min_de_eff:.2f}  n_support<=thr={n_support_eff}")
 
-        if df_pool.empty:
-            # No candidates under the color pool definition: return empty (correct behavior).
-            return df_pool
+        # FAILSAFE PATHS
+        if df_pool.empty or (len(df_pool) < int(_POOL_FALLBACK_MIN_N)):
+            # Fallback 1: adaptive ΔE pool on inv_eff (generic, no anchor rewrite)
+            df_pool2, adbg = _adaptive_de00_pool(
+                inv_eff,
+                anchor_lab=tuple(map(float, anchor_eff)),
+                thr_base=float(thr_used),
+                min_n=int(_POOL_FALLBACK_MIN_N),
+                cap=float(_POOL_FALLBACK_DE00_CAP),
+            )
+
+            # Fallback 2: if still empty/tiny -> hue-band subset then adaptive ΔE
+            if df_pool2.empty or len(df_pool2) < int(_POOL_FALLBACK_MIN_N):
+                hue_cand, hdbg = _hue_band_subset(
+                    inv_eff,
+                    anchor_hex=anchor_hex,
+                    anchor_lab=tuple(map(float, anchor_eff)),
+                    band_deg=float(_HUE_FAILSAFE_BAND_DEG),
+                )
+                if len(hue_cand) > 0:
+                    df_pool3, adbg2 = _adaptive_de00_pool(
+                        hue_cand,
+                        anchor_lab=tuple(map(float, anchor_eff)),
+                        thr_base=float(thr_used),
+                        min_n=int(_POOL_FALLBACK_MIN_N),
+                        cap=float(_POOL_FALLBACK_DE00_CAP),
+                    )
+                    if len(df_pool3) > 0:
+                        df_pool2 = df_pool3
+                        if debug:
+                            print("  FAILSAFE: hue-band subset used", hdbg, adbg2)
+
+            df_pool = df_pool2
+            if pool_cap > 0 and len(df_pool) > pool_cap:
+                df_pool = df_pool.head(pool_cap).copy()
+
+            if debug:
+                print("  FAILSAFE: adaptive ΔE used", adbg)
+
+            if df_pool.empty:
+                return df_pool
+
+        # UPDATED FAILSAFE (coherent gate):
+        # Use naming-prob pool when effective support is weak (not only 0).
+        req_label = _first_color_token_from_nlp(nlp_res)
+        use_naming_pool = False
+        if req_label and _naming_prob_label_supported(req_label, inv_with_probs=inv_eff):
+            if (n_support_eff < int(_NAMING_POOL_MIN_N)) or (float(min_de_eff) > float(thr_used)):
+                use_naming_pool = True
+            if len(df_pool) < int(_NAMING_POOL_MIN_N):
+                use_naming_pool = True
+
+        if use_naming_pool:
+            name_pool, ndbg = _pool_by_naming_prob(
+                inv_eff,
+                label=req_label,
+                pool_topn=int(_NAMING_POOL_TOPN),
+                p_min=float(_NAMING_POOL_P_MIN),
+                min_n=int(_NAMING_POOL_MIN_N),
+            )
+            if not name_pool.empty:
+                df_pool = name_pool
+                if pool_cap > 0 and len(df_pool) > pool_cap:
+                    df_pool = df_pool.head(pool_cap).copy()
+                if debug:
+                    ndbg = dict(ndbg)
+                    ndbg["gate"] = {
+                        "n_support_eff": int(n_support_eff),
+                        "min_de_eff": float(min_de_eff),
+                        "thr_used": float(thr_used),
+                        "pool_n_before": int(len(name_pool)),
+                    }
+                    print("  FAILSAFE: naming-prob pool used", ndbg)
+
     else:
         df_pool = inv.head(pool_cap).copy()
         if debug:
@@ -811,17 +1229,15 @@ def recommend_from_text(
             meta = _get(c, "meta", None)
             print(f"  axis={axis} dir={direction} strength={strength} evidence={evidence!r} meta={meta}")
 
-    # attach naming probs (chip_hex -> p_<label>)
     df_pool = _attach_naming_probs(df_pool)
 
-    # build within-family constraints from NLP + distributions
-    dists = _load_family_label_distributions()
-    family_label = _first_family_label_from_nlp(nlp_res, dists=dists) if has_color else None
-    family_specs = _family_specs_from_nlp(nlp_constraints) if (family_label is not None) else []
+    # within-family constraints require: label in distributions + distributions loaded
+    family_label_for_constraints = family_label if (family_label is not None and family_in_dists and bool(dists)) else None
+    family_specs = _family_specs_from_nlp(nlp_constraints) if (family_label_for_constraints is not None) else []
 
     if debug:
         print("\n[PHASE B][FAMILY-CONSTRAINTS]")
-        print(f"  family_label={family_label!r}")
+        print(f"  family_label={family_label!r}  in_dists={family_in_dists}")
         print(f"  specs_n={len(family_specs)}")
         if family_label is not None:
             pcol = f"p_{family_label}"
@@ -829,6 +1245,10 @@ def recommend_from_text(
                 f"  pcol_present={pcol in df_pool.columns}  "
                 f"p_min={_FAMILY_P_MIN}  p_hi={_FAMILY_P_HI}  floor={_FAMILY_FLOOR}"
             )
+        if family_label_for_constraints is None:
+            print("  within_family_applied=False")
+        else:
+            print("  within_family_applied=True")
             if family_specs:
                 for s in family_specs:
                     print(f"   - {s.axis}:{s.direction} q_lo={s.q_lo} q_hi={s.q_hi} strength={s.strength}")
@@ -840,10 +1260,10 @@ def recommend_from_text(
         lambda_preference=float(lambda_preference),
         calibration=assets.calibration,
         preference_weights=getattr(assets, "preference_weights", None),
-        # within-family (only applied if label+specs exist)
-        constraint_label=family_label,
+        # within-family (only applied if label+specs exist AND label_distributions supports it)
+        constraint_label=family_label_for_constraints,
         constraint_specs=family_specs,
-        label_distributions=dists if dists else None,
+        label_distributions=dists if (family_label_for_constraints is not None and dists) else None,
         constraint_p_min=float(_FAMILY_P_MIN),
         constraint_p_hi=float(_FAMILY_P_HI),
         constraint_floor=float(_FAMILY_FLOOR),
@@ -858,4 +1278,4 @@ def recommend_from_text(
     return scored.sort_values(score_col, ascending=False).head(int(topk)).copy()
 
 
-__all__ = ["recommend_from_text", "resolve_anchor_from_text"]
+__all__ = ["recommend_from_text", "resolve_anchor_from_text", "resolve_effective_anchor_from_text"]
