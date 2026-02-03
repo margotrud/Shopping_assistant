@@ -20,8 +20,9 @@ def _domain_anchor_from_naming_probs(
     *,
     label: str,
     p_min: float,
-    anchor_lab_lexicon: tuple[float, float, float] | None = None,  # NEW
-    anchor_hex: str | None = None,  # NEW (optional)
+    anchor_lab_lexicon: tuple[float, float, float] | None = None,  # kept for API compat
+    anchor_hex: str | None = None,  # used for fixed-path hue reference
+    chroma_q: float | None = None,  # NEW: opt-in chroma focus (no effect when None)
 ) -> tuple[float, float, float] | None:
     if inv is None or inv.empty:
         return None
@@ -47,20 +48,62 @@ def _domain_anchor_from_naming_probs(
         sub = inv.loc[m].copy()
         w = w_all[m]
 
-    # ---------- DEFAULT PATH (unchanged) ----------
+    # ---------- DEFAULT PATH (unchanged unless chroma_q is provided) ----------
     if label_l not in _DOMAIN_ANCHOR_FIX_LABELS:
         L = pd.to_numeric(sub["L_lab"], errors="coerce").to_numpy(float)
         a = pd.to_numeric(sub["a_lab"], errors="coerce").to_numpy(float)
         b = pd.to_numeric(sub["b_lab"], errors="coerce").to_numpy(float)
+
         ok = np.isfinite(L) & np.isfinite(a) & np.isfinite(b) & np.isfinite(w) & (w > 0.0)
         if not np.any(ok):
             return None
-        ww = w[ok]
+
+        L = L[ok]
+        a = a[ok]
+        b = b[ok]
+        ww = w[ok].astype(float)
+
+        # NEW: chroma focus (opt-in only; keeps legacy behavior when chroma_q is None)
+        if chroma_q is not None and len(ww) >= int(_DOMAIN_ANCHOR_MIN_N):
+            C = np.hypot(a, b).astype(float)
+            okc = np.isfinite(C) & np.isfinite(ww) & (ww > 0.0)
+            if np.any(okc):
+                C = C[okc]
+                Lc = L[okc]
+                ac = a[okc]
+                bc = b[okc]
+                wc = ww[okc]
+
+                # weighted quantile threshold (stable)
+                q = float(np.clip(float(chroma_q), 0.0, 1.0))
+                idxc = np.argsort(C)
+                Cs = C[idxc]
+                Ws = np.clip(wc[idxc], 0.0, np.inf)
+                s = float(np.sum(Ws))
+
+                if np.isfinite(s) and s > 0.0:
+                    cdf = np.cumsum(Ws) / (s + 1e-12)
+                    j = int(np.searchsorted(cdf, q, side="left"))
+                    j = int(np.clip(j, 0, len(Cs) - 1))
+                    thrC = float(Cs[j])
+
+                    keep = C >= thrC if q >= 0.5 else C <= thrC
+                    if int(np.sum(keep)) >= int(_DOMAIN_ANCHOR_MIN_N):
+                        L, a, b, ww = Lc[keep], ac[keep], bc[keep], wc[keep]
+                    else:
+                        # fallback: take top/bottom chroma to reach min_n
+                        ordC = np.argsort(C)
+                        if q >= 0.5:
+                            ordC = ordC[::-1]
+                        ordC = ordC[: int(_DOMAIN_ANCHOR_MIN_N)]
+                        L, a, b, ww = Lc[ordC], ac[ordC], bc[ordC], wc[ordC]
+
         ww = ww / (np.sum(ww) + 1e-12)
-        return (float(np.sum(L[ok] * ww)), float(np.sum(a[ok] * ww)), float(np.sum(b[ok] * ww)))
+        return (float(np.sum(L * ww)), float(np.sum(a * ww)), float(np.sum(b * ww)))
 
     # ---------- FIXED PATH (ONLY purple/violet/brown) ----------
     # Use HSV hue computed from chip_hex (not Lab-hue) for band selection.
+    # IMPORTANT: chroma_q is intentionally ignored here to preserve your "perfect" anchors.
     sub2 = _ensure_hue_rgb_deg(sub)
     h = pd.to_numeric(sub2.get("_H_rgb_deg", pd.Series([np.nan] * len(sub2))), errors="coerce").to_numpy(float)
 
