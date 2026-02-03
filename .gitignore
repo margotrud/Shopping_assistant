@@ -13,7 +13,6 @@ Scripts/tools/data/
 
 # If needed, ignore images / json ONLY inside data
 data/**/*.png
-data/**/*.json
 
 
 # =====================================================
