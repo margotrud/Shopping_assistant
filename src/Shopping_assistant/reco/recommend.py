@@ -59,11 +59,107 @@ def _adaptive_hue_band_deg(anchor_C: float) -> float:
     return float(np.clip(18.0 + 0.20 * float(anchor_C), 18.0, 36.0))
 
 
+def _wants_hi_chroma(nlp_res) -> bool:
+    """
+    Opt-in trigger for chroma-focused domain anchor.
+
+    Uses constraint axis+direction; when ambiguous and model chooses brightness,
+    detects near-ties with vibrancy/saturation using axis_debug.
+
+    IMPORTANT OVERRIDE:
+      If user explicitly requests "darker"/"less bright" (depth/brightness lower),
+      we do NOT apply a high-chroma anchor quantile (let scoring handle it).
+    """
+    cons = tuple(getattr(nlp_res, "constraints", ()) or ())
+    if not cons:
+        return False
+
+    HI_AXES = {"saturation", "vibrancy", "chroma"}
+    HI_DIRS = {"raise", "high", "up", "more"}
+
+    LOWER_BLOCK_AXES = {"depth", "brightness"}
+    LOWER_DIRS = {"lower", "down", "less"}
+
+    # --- hard override: any explicit lowering on depth/brightness blocks hi-chroma ---
+    for c in cons:
+        axis = getattr(c, "axis", None)
+        direction = getattr(c, "direction", None)
+        axis = axis.value if hasattr(axis, "value") else axis
+        direction = direction.value if hasattr(direction, "value") else direction
+        if axis in LOWER_BLOCK_AXES and direction in LOWER_DIRS:
+            return False
+
+    # margins: tuned to your observed scales (MiniLM sims ~0.3-0.6)
+    MARGIN_RANKED = 0.03
+    MARGIN_VOTE_AVG = 0.04  # slightly looser for vote aggregates
+
+    def _near_tie_ranked(axis_debug) -> bool:
+        ranked = axis_debug.get("ranked")
+        if not isinstance(ranked, (list, tuple)) or len(ranked) < 2:
+            return False
+        try:
+            top_score = float(ranked[0][1])
+            best_hi = None
+            for ax, sc in ranked:
+                ax = str(ax)
+                if ax in HI_AXES:
+                    s = float(sc)
+                    best_hi = s if best_hi is None else max(best_hi, s)
+            return (best_hi is not None) and ((top_score - best_hi) <= MARGIN_RANKED)
+        except Exception:
+            return False
+
+    def _near_tie_vote(axis_debug) -> bool:
+        ws = axis_debug.get("vote_axis_weighted_sum")
+        wsum = axis_debug.get("vote_axis_weight_sum")
+        if not isinstance(ws, dict) or not isinstance(wsum, dict):
+            return False
+        try:
+            def avg(ax: str) -> float:
+                num = float(ws.get(ax, 0.0))
+                den = float(wsum.get(ax, 0.0))
+                return (num / den) if den > 0 else float("nan")
+
+            top = avg("brightness")
+            if not np.isfinite(top):
+                return False
+
+            best_hi = None
+            for ax in HI_AXES:
+                v = avg(ax)
+                if np.isfinite(v):
+                    best_hi = v if best_hi is None else max(best_hi, v)
+
+            return (best_hi is not None) and ((top - best_hi) <= MARGIN_VOTE_AVG)
+        except Exception:
+            return False
+
+    for c in cons:
+        axis = getattr(c, "axis", None)
+        direction = getattr(c, "direction", None)
+        meta = getattr(c, "meta", None) or {}
+
+        axis = axis.value if hasattr(axis, "value") else axis
+        direction = direction.value if hasattr(direction, "value") else direction
+
+        # direct chroma intent
+        if axis in HI_AXES and direction in HI_DIRS:
+            return True
+
+        # ambiguous: brightness but near-tie with chroma axes
+        if axis == "brightness" and direction in HI_DIRS:
+            axis_debug = meta.get("axis_debug") or {}
+            if _near_tie_ranked(axis_debug):
+                return True
+            if _near_tie_vote(axis_debug):
+                return True
+
+    return False
+
+
 # =============================================================================
 # ANCHOR-ONLY API (no scoring, no inventory)
 # =============================================================================
-
-
 def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
     """
     Anchor-only resolution for "plain colors" debugging.
@@ -111,8 +207,9 @@ def resolve_effective_anchor_from_text(
     """
     Resolve BOTH:
       - lexicon anchor (same as resolve_anchor_from_text)
-      - effective anchor used by recommend_from_text for plain-color queries
-        (domain anchor via naming probs p_<label> when available)
+      - effective anchor used by recommend_from_text for:
+          * plain-color queries
+          * hi-chroma intent (bright/vivid -> fuchsia-like)
 
     Returns:
       {
@@ -123,6 +220,8 @@ def resolve_effective_anchor_from_text(
         family_label,
         family_label_in_dists (bool),
         used_domain_anchor (bool),
+        hi_chroma (bool),
+        chroma_q (float|None),
       }
     """
     if assets is None:
@@ -159,13 +258,19 @@ def resolve_effective_anchor_from_text(
     anchor_eff = anchor_lab
     used_domain = False
 
-    if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
+    # Mirror recommend_from_text behavior for anchor resolution
+    cons = tuple(getattr(nlp_res, "constraints", ()) or ())
+    want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
+    chroma_q = 0.90 if want_hiC else None
+
+    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
             p_min=float(_DOMAIN_ANCHOR_P_MIN),
             anchor_lab_lexicon=tuple(map(float, anchor_lab)) if anchor_lab is not None else None,
             anchor_hex=anchor_hex,
+            chroma_q=chroma_q,
         )
         if dom is not None:
             anchor_eff = dom
@@ -181,6 +286,8 @@ def resolve_effective_anchor_from_text(
         "family_label": family_label,
         "family_label_in_dists": bool(in_dists),
         "used_domain_anchor": bool(used_domain),
+        "hi_chroma": bool(want_hiC),
+        "chroma_q": chroma_q,
     }
 
     if debug:
@@ -188,6 +295,7 @@ def resolve_effective_anchor_from_text(
         print(f"  text={text!r}")
         print(f"  has_color={has_color}")
         print(f"  family_label={family_label!r}  in_dists={in_dists}")
+        print(f"  hi_chroma={bool(want_hiC)}  chroma_q={chroma_q}")
         print(f"  anchor_hex={anchor_hex}")
         print(f"  anchor_lab_lexicon={anchor_lab}")
         print(f"  anchor_lab_effective={anchor_eff}")
@@ -199,8 +307,6 @@ def resolve_effective_anchor_from_text(
 # =============================================================================
 # MAIN
 # =============================================================================
-
-
 def recommend_from_text(
     text: str,
     *,
@@ -254,20 +360,30 @@ def recommend_from_text(
             elif _naming_prob_label_supported(tok, inv_with_probs=inv):
                 family_label, family_in_dists = tok, False
 
-    # Domain anchor for plain color queries
-    if has_color and anchor_eff is not None and family_label is not None and _is_plain_color_query(nlp_res):
+    # Domain anchor:
+    # - baseline for plain-color queries
+    # - chroma-focused domain anchor ONLY when NLP explicitly requests high chroma
+    cons = tuple(getattr(nlp_res, "constraints", ()) or ())
+    want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
+    chroma_q = 0.90 if want_hiC else None
+
+    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
             p_min=float(_DOMAIN_ANCHOR_P_MIN),
             anchor_lab_lexicon=tuple(map(float, anchor_lab)) if anchor_lab is not None else None,
             anchor_hex=anchor_hex,
+            chroma_q=chroma_q,
         )
         if dom is not None:
             anchor_eff = dom
             if debug:
                 print("\n[DOMAIN ANCHOR]")
-                print(f"  family_label={family_label!r} p_min={_DOMAIN_ANCHOR_P_MIN} in_dists={family_in_dists}")
+                print(
+                    f"  family_label={family_label!r} p_min={_DOMAIN_ANCHOR_P_MIN} in_dists={family_in_dists} "
+                    f"hi_chroma={bool(want_hiC)}"
+                )
                 print(f"  anchor_lab_lexicon={anchor_lab}")
                 print(f"  anchor_lab_domain ={anchor_eff}")
 
@@ -526,6 +642,9 @@ def recommend_from_text(
 
     # Restore dropped feature columns (incl. light_hsl expected by tests)
     scored = _restore_feature_cols(df_pool, scored)
+    # Ensure anchor is present on the final returned DF (restore_feature_cols may drop it)
+    if has_color and anchor_eff is not None:
+        scored = _ensure_de00_anchor_col(scored, tuple(map(float, anchor_eff)))
 
     # --------------------------
     # Anchor-fidelity prior (prevents drift when pool widens under constraints)
@@ -539,7 +658,9 @@ def recommend_from_text(
         else:
             w = 0.75
 
-        base = scored["score_total"] if "score_total" in scored.columns else (scored["score"] if "score" in scored.columns else None)
+        base = scored["score_total"] if "score_total" in scored.columns else (
+            scored["score"] if "score" in scored.columns else None
+        )
         if base is not None:
             scored = scored.copy()
             scored["score_total"] = base - float(w) * scored["deltaE_norm"]
