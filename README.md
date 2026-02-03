@@ -1,208 +1,91 @@
-# Shopping Assistant — NLP-Driven Preference Resolution & Product Ranking
+# Shopping Assistant V8 (Lipstick Recommender)
 
-## Overview
+Portfolio project combining **NLP**, **color science**, and **recommendation systems**
+to suggest cosmetic shades (lipsticks) based on natural language preferences.
 
-This project demonstrates an **end-to-end data science pipeline** that transforms **free-form natural language preferences** into **numeric constraints** and applies them to **rank real products**.
-
-The focus is **not UI or deployment**, but:
-- robust NLP interpretation,
-- explicit preference resolution,
-- interpretable numeric modeling,
-- deterministic scoring,
-- and testable engineering.
-
-The domain used for demonstration is **lipstick recommendation**, chosen for its **high semantic ambiguity** (color, intensity, exclusions, trade-offs).
+This repository is intentionally kept **lightweight** and **reviewable**:
+large datasets, trained models, and generated artifacts are excluded.
 
 ---
 
-## What This Project Demonstrates (for Recruiters)
+## Installation
 
-**Core DS / ML Engineering skills:**
-- Natural language → structured representation
-- Preference resolution under ambiguity and negation
-- Mapping language to numeric axes
-- Multi-constraint scoring and ranking
-- Deterministic, testable pipelines
-- Data enrichment and calibration
-- Clear separation between modeling, data, and orchestration
-
-**What it deliberately does NOT try to be:**
-- A production product
-- A deployed system
-- A UI-heavy demo
-
-This is a **technical portfolio project**, optimized for **code review**, **reasoning clarity**, and **signal density**.
-
----
-
-## High-Level Pipeline
-
-```
-User text
-  ↓
-NLP interpretation
-  ↓
-Preference resolution (likes / dislikes / intensity)
-  ↓
-Projection to numeric axes (brightness, depth, saturation, etc.)
-  ↓
-Constraint merging & thresholds
-  ↓
-Deterministic scoring against enriched product inventory
-  ↓
-Ranked recommendations
-```
-
----
-
-## Example
-
-**Input**
-```
-"I want a deep red lipstick but not too bright"
-```
-
-**Output**
-- Structured constraints on color axes (depth ↑, brightness ↓)
-- Ranked list of matching shades
-- Deterministic ordering (reproducible across runs)
-
----
-
-## Repository Structure
-
-```
-src/Shopping_assistant/
-│
-├── nlp/                  # NLP interpretation & preference resolution
-│   ├── interpretation/   # Clause parsing, mention extraction
-│   ├── resolve/          # Axis projection, merge logic, thresholds
-│   └── schema.py         # Typed NLP data structures
-│
-├── color/
-│   ├── scoring.py        # Numeric scoring engine
-│   ├── distance.py       # Color distance functions
-│   └── calibration/      # Calibration utilities
-│
-├── reco/                 # Recommendation orchestration
-│   └── recommend.py
-│
-├── ml/                   # Calibration, clustering, analysis scripts
-├── io/                   # Asset loading & validation
-├── utils/                # Shared utilities
-│
-Scripts/
-├── demo_reco.py          # One-command end-to-end demo
-├── reco_ab.py            # A/B & diagnostic experiments
-│
-data/
-├── enriched_data/        # Product inventory with numeric axes
-├── calibration/          # Axis calibration files
-├── prototypes/           # Color prototypes
-└── assignments/          # Prototype ↔ product mappings
-│
-tests/
-├── test_scoring_invariants.py
-├── test_color_ranking_goldens.py
-├── test_reco_contract.py
-└── ...
-```
-
----
-
-## Data
-
-The project ships with **real, pre-enriched data** to ensure full reproducibility.
-
-- **Enriched inventory**  
-  Lipstick shades with numeric representations:
-  - color spaces (Lab / HSL / HSV)
-  - derived axes (brightness, depth, vibrancy, clarity, etc.)
-
-- **Calibration files**  
-  JSON files defining:
-  - axis cutpoints
-  - strength mappings
-  - scoring weights
-
-- **Prototypes & assignments**  
-  Used for clustering and interpretability experiments.
-
-No external APIs or live scraping are required to run the pipeline.
-
----
-
-## Quickstart (Reproducible)
-
-### 1. Install
 ```bash
+python -m venv .venv
+# activate the virtual environment
 pip install -e .
 ```
 
-### 2. Run demo
+The project uses a `src/` layout and must be installed (editable mode recommended).
+
+---
+
+## Optional dependency: sentence-transformers
+
+Some NLP polarity and constraint features rely on embedding-based similarity
+(`sentence-transformers`).
+
+Install it only if you want full NLP behavior and to run all tests:
+
 ```bash
-python Scripts/demo_reco.py   --text "I want a deep red lipstick but not too bright"
+pip install sentence-transformers
 ```
 
-### 3. Run tests
+If not installed:
+- Core recommendation still works
+- Related NLP tests are automatically skipped
+
+---
+
+## Run tests
+
 ```bash
 pytest -q
 ```
 
 ---
 
-## Design Principles
+## Example usage
 
-- **Deterministic by default**  
-  Same input → same output.
+```bash
+python -c """
+from Shopping_assistant.reco.recommend import recommend_from_text
 
-- **Explicit over implicit**  
-  No hidden heuristics, no black-box magic.
+df = recommend_from_text(
+    'I want a red lipstick but not too bright',
+    topk=5,
+)
 
-- **Numeric first**  
-  Language is translated into numeric constraints as early as possible.
-
-- **Test-driven**  
-  Ranking stability and invariants are enforced by tests.
-
-- **Debuggable**  
-  Intermediate representations are inspectable at every step.
+print(df.head())
+"""
+```
 
 ---
 
-## Why Lipstick?
+## Data policy
 
-Lipstick is a **hard NLP problem**, not a toy domain:
-- dense adjectives (“deep”, “bright”, “soft”, “muted”)
-- frequent negations (“not too bright”)
-- subjective trade-offs
-- overlapping color semantics
+This repository **does not include**:
+- Full product inventories (CSV)
+- Training datasets
+- Trained ML models
+- Generated plots or reports
 
-This makes it ideal to demonstrate **preference modeling**, **constraint resolution**, and **ranking under ambiguity**.
+Only **runtime configuration assets** are versioned:
+- Color and NLP lexicons (`data/colors/*.json`, `data/nlp/*.json`)
+- Scoring and calibration configs (`data/models/*.json`)
 
----
-
-## Limitations
-
-- English-only NLP
-- Offline, pre-enriched dataset
-- No user personalization or learning loop
-- No production deployment layer
+This keeps the repo:
+- Fast to clone
+- Easy to review
+- Suitable for GitHub and portfolio use
 
 ---
 
-## Status
+## Scope
 
-- ✔ End-to-end pipeline functional
-- ✔ Fully reproducible
-- ✔ Covered by tests
-- ✔ Suitable for technical review
-
----
-
-## Author
-
-**Margot**  
-Data Scientist / ML Engineer  
-
-This project was built as a **technical portfolio** to demonstrate applied NLP, numeric modeling, and recommendation logic.
+This is a **portfolio / research project**, not a production system.
+Design decisions favor:
+- Transparency
+- Explicit heuristics
+- Testable behavior
+- Reproducible logic
