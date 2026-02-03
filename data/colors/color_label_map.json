@@ -1,0 +1,38 @@
+{
+  "grey": "gray",
+  "gris": "gray",
+  "silver": "gray",
+
+  "tan": "beige",
+  "sand": "beige",
+  "ivory": "beige",
+  "cream": "beige",
+
+  "taupe": "taupe",
+
+  "olive": "green",
+  "olive green": "green",
+  "sage": "green",
+  "khaki": "green",
+
+  "navy": "blue",
+  "azure": "blue",
+
+  "burgundy": "red",
+  "maroon": "red",
+  "crimson": "red",
+
+  "magenta": "pink",
+  "fuchsia": "pink",
+  "hot pink": "pink",
+
+  "salmon": "coral",
+  "coral pink": "coral",
+
+  "chocolate": "brown",
+  "coffee": "brown",
+
+  "lavender": "purple",
+  "plum": "purple",
+  "violet": "purple"
+}
