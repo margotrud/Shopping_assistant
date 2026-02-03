@@ -196,5 +196,15 @@ def _first_color_token_from_nlp(nlp_res) -> str | None:
 
 
 def _is_plain_color_query(nlp_res) -> bool:
-    cons = tuple(_get(nlp_res, "constraints", ()) or ())
-    return _has_color_like_mention(nlp_res) and (len(cons) == 0)
+    if not _has_color_like_mention(nlp_res):
+        return False
+
+    n = 0
+    for m in _get(nlp_res, "mentions", ()) or ():
+        kind = (_get_enum_value(_get(m, "kind", None)) or "").lower()
+        if kind != "colors":
+            continue
+        pol = (_get_enum_value(_get(m, "polarity", None)) or "").lower()
+        if pol in {"like", "neutral", "unknown"}:
+            n += 1
+    return n == 1

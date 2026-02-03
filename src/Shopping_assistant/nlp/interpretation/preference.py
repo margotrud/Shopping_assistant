@@ -111,19 +111,28 @@ def _mention_sort_key(m: Mention) -> tuple:
 
 
 def _constraint_sort_key(c: Constraint) -> tuple:
+    """
+    Important:
+        This must be None-safe because direction/axis can be Optional after conflict resolution/normalization.
+    """
     meta = c.meta or {}
     gs = meta.get("evidence_global_start")
     ge = meta.get("evidence_global_end")
     gs_i = int(gs) if isinstance(gs, int) else 10**9
     ge_i = int(ge) if isinstance(ge, int) else 10**9
+
+    ax = c.axis.value if getattr(c, "axis", None) is not None else ""
+    dr = c.direction.value if getattr(c, "direction", None) is not None else ""
+    st = c.strength.value if getattr(c, "strength", None) is not None else ""
+
     return (
-        int(c.clause_id),
-        str(c.axis.value),
-        str(c.direction.value),
-        str(c.strength.value),
+        int(getattr(c, "clause_id", 0) or 0),
+        str(ax),
+        str(dr),
+        str(st),
         gs_i,
         ge_i,
-        str(c.evidence),
+        str(getattr(c, "evidence", "") or ""),
     )
 
 
@@ -182,6 +191,17 @@ def _to_jsonable(x: Any) -> Any:
         if out:
             return out
     return str(x)
+
+
+def _enum_value_or_none(x: Any) -> Any:
+    """
+    Does:
+        Safely return Enum.value if Enum-like, else None (for Optional enums).
+    """
+    if x is None:
+        return None
+    v = getattr(x, "value", None)
+    return v if v is not None else None
 
 
 def interpret_nlp(
@@ -351,13 +371,13 @@ def interpret_nlp(
             if debug and isinstance(trace, dict):
                 trace["constraints_raw"].append(
                     {
-                        "clause_id": c2.clause_id,
-                        "axis": c2.axis.value,
-                        "direction": c2.direction.value,
-                        "strength": c2.strength.value,
+                        "clause_id": int(getattr(c2, "clause_id", 0) or 0),
+                        "axis": _enum_value_or_none(getattr(c2, "axis", None)),
+                        "direction": _enum_value_or_none(getattr(c2, "direction", None)),
+                        "strength": _enum_value_or_none(getattr(c2, "strength", None)),
                         "confidence": float(getattr(c2, "confidence", 0.0) or 0.0),
-                        "evidence": c2.evidence,
-                        "meta": c2.meta,
+                        "evidence": getattr(c2, "evidence", None),
+                        "meta": getattr(c2, "meta", None),
                     }
                 )
 
@@ -394,7 +414,15 @@ def interpret_nlp(
                 ]
             )
 
+    # Conflict resolution can legally yield constraints with optional fields (axis/direction canceled)
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
+
+    # Hard filter: constraints without axis OR direction are not projectable and should not participate downstream.
+    constraints_final = tuple(
+        c for c in constraints_final
+        if getattr(c, "axis", None) is not None and getattr(c, "direction", None) is not None
+    )
+
     constraints_final = tuple(_inject_axis_family(c) for c in constraints_final)
     constraints_final = normalize_constraints(constraints_final, strict=debug)
 
@@ -408,13 +436,16 @@ def interpret_nlp(
         trace["conflicts"] = conflicts_diag
         trace["constraints_final"] = [
             {
-                "clause_id": c.clause_id,
-                "axis": c.axis.value,
-                "direction": c.direction.value,
-                "strength": c.strength.value,
+                "clause_id": int(getattr(c, "clause_id", 0) or 0),
+                "axis": _enum_value_or_none(getattr(c, "axis", None)),
+                "direction": _enum_value_or_none(getattr(c, "direction", None)),
+                "strength": _enum_value_or_none(getattr(c, "strength", None)),
                 "confidence": float(getattr(c, "confidence", 0.0) or 0.0),
-                "evidence": c.evidence,
-                "meta": {**(c.meta or {}), "axis_family_effective": (c.meta or {}).get("axis_family_effective")},
+                "evidence": getattr(c, "evidence", None),
+                "meta": {
+                    **(getattr(c, "meta", None) or {}),
+                    "axis_family_effective": (getattr(c, "meta", None) or {}).get("axis_family_effective"),
+                },
             }
             for c in constraints_sorted
         ]

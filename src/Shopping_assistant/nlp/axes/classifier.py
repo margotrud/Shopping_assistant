@@ -45,28 +45,34 @@ class AxisPred:
 
 _AXIS_DESCRIPTIONS: Dict[Axis, Tuple[str, ...]] = {
     Axis.BRIGHTNESS: (
-        "Perceived lightness of a colors: where it lies on the light ↔ dark (amount of light) continuum.",
-        "How light or dark a shade appears, independent of how vivid or neon it is.",
+        "Perceived lightness of a color: where it lies on the light ↔ dark continuum.",
+        "How light or dark a shade appears (lightness), independent of chroma or neon feel.",
+        "A shade that looks pale/light vs a shade that looks dim/dark, regardless of saturation.",
     ),
     Axis.DEPTH: (
-        "Color depth/richness: how deep, inky, dense or rich a shade feels (not simply lightness).",
-        "Perceived richness and density of a shade (deep/inky/rich), distinct from brightness.",
+        "Color depth as darkness/inkiness: how deep, dark, inky or dense a shade feels.",
+        "Perceived darkness and density of a shade (inky/dense), distinct from saturation and neon pop.",
+        "A shade that feels deep/inky/blackened vs a shade that feels light/pale, even if both are saturated.",
     ),
     Axis.SATURATION: (
-        "Saturation/chroma: muted/desaturated ↔ saturated (intensity of chroma, not neon).",
-        "How saturated vs muted a shade appears (chroma), separate from brightness and neonness.",
+        "Saturation/chroma: muted/desaturated ↔ saturated (strength of chroma), not neon/fluorescent.",
+        "How saturated vs muted a shade appears, separate from lightness and from neon punch.",
+        "A color that is washed-out/greyed vs a color that is fully chromatic, without implying neon.",
     ),
     Axis.VIBRANCY: (
-        "Vibrancy/neonness/flashiness: fluorescent/electric/punchy appearance (not just saturation).",
-        "Neon or flashy look (electric/fluorescent), distinct from simple chroma saturation.",
+        "Vibrancy/neon-pop: electric/fluorescent/flashy appearance (pop), not lightness and not darkness.",
+        "Neon/electric/fluorescent look: a color that pops off the surface, distinct from mere saturation.",
+        "A color with an electric/fluorescent 'pop' and punchiness, independent of being light or dark.",
+        "Perceived pop/flashiness that can exist at many lightness levels (not a lightness axis).",
     ),
     Axis.CLARITY: (
         "Clarity/cleanliness vs hazy/muddy/soft appearance of a shade.",
         "How clean/crisp vs muddy/hazy a shade looks, independent of brightness and saturation.",
+        "A shade that looks clear/sharp vs a shade that looks cloudy/soft/murky.",
     ),
 }
 
-_PROTOTYPES_VERSION = "v6_lightness_tiebreak_contrastive_wordnet_optional"
+_PROTOTYPES_VERSION = "v8_add_brightness_vibrancy_tiebreak"
 
 
 def _canon_label(s: str) -> str:
@@ -244,23 +250,43 @@ def make_axis_classifier_fn(
         return float(a @ b)
 
     # -----------------------------------------------------------------------
-    # Non-hardcoded LIGHTNESS tie-breaker (brightness vs depth) for close calls
+    # Contrastive tie-break probes (semantic; not token maps)
     # -----------------------------------------------------------------------
-    @lru_cache(maxsize=128)
-    def _tie_vec(text: str) -> Any:
+    @lru_cache(maxsize=256)
+    def _probe_vec(text: str) -> Any:
         v = model.encode([text], convert_to_numpy=True, show_progress_bar=False)[0]
         v = v / (np.linalg.norm(v) + 1e-12)
         return v
 
     def _tie_break_lightness(v_label: Any) -> Optional[Axis]:
-        # Contrastive probes (not a token map). Decision is semantic vs two poles.
-        v_bright = _tie_vec("high lightness / bright / light / pale; opposite of dark / deep")
-        v_dark = _tie_vec("low lightness / dark / deep / inky; opposite of bright / light / pale")
+        # brightness vs depth (lightness pole test)
+        v_bright = _probe_vec("high lightness; light; pale; opposite of dark")
+        v_dark = _probe_vec("low lightness; dark; deep; inky; opposite of light")
         s_b = _cos(v_label, v_bright)
         s_d = _cos(v_label, v_dark)
         if abs(s_b - s_d) < 0.02:
             return None
         return Axis.BRIGHTNESS if s_b > s_d else Axis.DEPTH
+
+    def _tie_break_brightness_vibrancy(v_label: Any) -> Optional[Axis]:
+        # lightness vs neon-pop (prevents 'bright' drifting to vibrancy)
+        v_bri = _probe_vec("lightness; amount of light; pale/light; opposite of dark")
+        v_vib = _probe_vec("neon; fluorescent; electric; flashy; color pops; not about lightness")
+        s_b = _cos(v_label, v_bri)
+        s_v = _cos(v_label, v_vib)
+        if abs(s_b - s_v) < 0.02:
+            return None
+        return Axis.BRIGHTNESS if s_b > s_v else Axis.VIBRANCY
+
+    def _tie_break_vibrancy_depth(v_label: Any) -> Optional[Axis]:
+        # vibrancy vs depth (pop vs darkness)
+        v_vib = _probe_vec("neon; fluorescent; electric; flashy; vivid pop; eye-catching")
+        v_dep = _probe_vec("deep; dark; inky; dense; blackened; low lightness")
+        s_v = _cos(v_label, v_vib)
+        s_d = _cos(v_label, v_dep)
+        if abs(s_v - s_d) < 0.02:
+            return None
+        return Axis.VIBRANCY if s_v > s_d else Axis.DEPTH
 
     # -----------------------------------------------------------------------
     # Optional WordNet sense rerank for brightness vs depth ambiguity
@@ -358,14 +384,31 @@ def make_axis_classifier_fn(
                 best_ax, best_sim, margin = best_ax2, float(best_sim2), float(margin2)
                 ranked = ranked2
 
-        # LIGHTNESS tie-breaker for close {BRIGHTNESS, DEPTH} calls
+        # Tie-breakers for close calls (semantic probes; not keyword rules)
         if best_sim >= float(min_sim) and margin < float(min_margin) and len(ranked) >= 2:
             ax1, ax2 = ranked[0][0], ranked[1][0]
-            if {ax1, ax2} == {Axis.BRIGHTNESS, Axis.DEPTH}:
+            top2 = {ax1, ax2}
+
+            # brightness vs depth
+            if top2 == {Axis.BRIGHTNESS, Axis.DEPTH}:
                 chosen = _tie_break_lightness(v)
                 if chosen is not None:
                     best_ax = chosen
-                    margin = float(min_margin)  # pass gate for downstream stability
+                    margin = float(min_margin)
+
+            # brightness vs vibrancy (prevents 'bright' -> vibrancy)
+            elif top2 == {Axis.BRIGHTNESS, Axis.VIBRANCY}:
+                chosen = _tie_break_brightness_vibrancy(v)
+                if chosen is not None:
+                    best_ax = chosen
+                    margin = float(min_margin)
+
+            # vibrancy vs depth (prevents 'vibrant' drifting to depth)
+            elif top2 == {Axis.VIBRANCY, Axis.DEPTH}:
+                chosen = _tie_break_vibrancy_depth(v)
+                if chosen is not None:
+                    best_ax = chosen
+                    margin = float(min_margin)
 
         # Optional WordNet sense rerank ONLY for brightness vs depth ambiguity
         wn_r = _wordnet_sense_rerank_if_needed(lab, ranked, context=context)

@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     from spacy.tokens import Doc, Token
 else:
     Language = Any  # type: ignore
-    Doc = Any       # type: ignore
-    Token = Any     # type: ignore
+    Doc = Any  # type: ignore
+    Token = Any  # type: ignore
 
 
 # ---------------------------------------------------------------------
@@ -25,15 +25,25 @@ else:
 _AXIS_LEXICON: Dict[str, Axis] = {
     # Hard override for known ambiguous token(s)
     "dim": Axis.BRIGHTNESS,
-
     # Cosmetics/domain frequent: ensure stable mapping (NOT per-colors hardcoding)
     "muted": Axis.SATURATION,
     "dusty": Axis.SATURATION,
+    "saturated": Axis.SATURATION,
+    "desaturated": Axis.SATURATION,
+
 }
 
 _COLOR_DOMAIN_NOUNS = {
-    "colors", "shade", "tone", "tint", "hue",
-    "lipstick", "gloss", "balm", "liner", "stain",
+    "colors",
+    "shade",
+    "tone",
+    "tint",
+    "hue",
+    "lipstick",
+    "gloss",
+    "balm",
+    "liner",
+    "stain",
 }
 
 _AXIS_FAMILY: Dict[Axis, str] = {
@@ -357,6 +367,7 @@ def _axis_from_token(
 # NON-STATIC negation + degree + axis-extremeness (NO noise-word lists)
 # ---------------------------------------------------------------------
 
+
 def _has_negation(tok: Token) -> bool:
     return any(ch.dep_ == "neg" for ch in tok.children)
 
@@ -556,6 +567,7 @@ def _adv_intensity_score(adv_lemma: str, *, model_name: str) -> float:
 # Axis poles (conceptual, not token lists)
 # ---------------------------------------------------------------------
 
+
 @lru_cache(maxsize=256)
 def _axis_poles(model_name: str) -> Dict[Axis, Tuple[str, str, str]]:
     """
@@ -684,35 +696,56 @@ def _invert_dir(d: Direction) -> Direction:
 # Direction inference (semantic poles; no token tables)
 # ---------------------------------------------------------------------
 
+
 @lru_cache(maxsize=256)
 def _axis_dir_poles(model_name: str) -> Dict[Axis, Tuple[str, str]]:
     """
     Returns (raise_pole_text, lower_pole_text) for direction inference.
     These are conceptual descriptions (not synonym lists).
+
+    Contract:
+    - raise_pole  => semantic meaning of "MORE / INCREASE"
+    - lower_pole  => semantic meaning of "LESS / DECREASE"
     """
     return {
         Axis.BRIGHTNESS: (
-            "increase perceived lightness; make the shade lighter / brighter",
-            "decrease perceived lightness; make the shade darker / less bright",
+            "higher lightness; lighter; brighter; more light reflected; closer to white",
+            "lower lightness; darker; dimmer; closer to black",
         ),
         Axis.DEPTH: (
-            "increase perceived depth; make the shade deeper / richer / inkier",
-            "decrease perceived depth; make the shade less deep / less inky",
+            "greater depth; deeper; darker; inkier; denser color mass",
+            "less depth; shallower; lighter; less inky",
         ),
         Axis.SATURATION: (
-            "increase saturation/chroma; make the shade more saturated, less muted",
-            "decrease saturation/chroma; make the shade more muted / desaturated",
+            "higher chroma; more saturated; stronger color intensity; less muted",
+            "lower chroma; less saturated; more muted; more greyed",
         ),
         Axis.VIBRANCY: (
-            "increase neon/electric/flashy feel; more fluorescent / vivid pop",
-            "decrease neon/electric/flashy feel; more subdued, not fluorescent",
+            "stronger visual pop; more vibrant; more vivid; punchy; neon or electric appearance",
+            "weaker visual pop; less vibrant; subdued; muted energy; not neon or flashy",
         ),
         Axis.CLARITY: (
-            "increase clarity; cleaner/crisper appearance; less muddy",
-            "decrease clarity; hazier/muddier/softer appearance",
+            "cleaner and clearer appearance; crisp; sharp; not muddy or hazy",
+            "less clear; muddier; hazier; softer or cloudy appearance",
         ),
     }
 
+def _axis_direct_base_dir(lemma: str, *, axis: Axis) -> Optional[Direction]:
+    l = (lemma or "").strip().lower()
+    if not l:
+        return None
+
+    if axis == Axis.SATURATION:
+        if l in {"saturated", "saturate"}:
+            return Direction.RAISE
+        if l in {"desaturated", "desaturate"}:
+            return Direction.LOWER
+
+    # optionnel si tu veux aussi sécuriser BRIGHTNESS:
+    # if axis == Axis.BRIGHTNESS and l in {"bright"}: return Direction.RAISE
+    # if axis == Axis.BRIGHTNESS and l in {"dim"}: return Direction.LOWER
+
+    return None
 
 def _semantic_direction(
     tok: Token,
@@ -725,11 +758,31 @@ def _semantic_direction(
     if not lemma:
         return None
 
+    # ------------------------------------------------------------------
+    # HARD DIRECTION ANCHOR FOR AXIS-DIRECT ADJECTIVES
+    # (prevents embedding confusion like "saturated" ~ "less saturated")
+    # ------------------------------------------------------------------
+    l = lemma.lower()
+
+    if axis == Axis.SATURATION:
+        if l in {"saturated", "saturate"}:
+            return Direction.RAISE
+        if l in {"desaturated", "desaturate"}:
+            return Direction.LOWER
+
+    # (optionnel mais recommandé si tu veux bétonner aussi ces axes)
+    # if axis == Axis.BRIGHTNESS:
+    #     if l in {"bright"}:
+    #         return Direction.RAISE
+    #     if l in {"dim", "dark"}:
+    #         return Direction.LOWER
+
     poles = _axis_dir_poles(model_name).get(axis)
     if not poles:
         return None
 
     raise_txt, lower_txt = poles
+
     v = _text_vec(lemma, model_name=model_name)
     v_raise = _text_vec(raise_txt, model_name=model_name)
     v_lower = _text_vec(lower_txt, model_name=model_name)
@@ -739,34 +792,39 @@ def _semantic_direction(
 
     if abs(float(s_raise) - float(s_lower)) < float(min_delta):
         return None
+
     return Direction.RAISE if s_raise > s_lower else Direction.LOWER
 
 
-def _direction_from_context(
-    tok: Token,
-    *,
-    axis: Axis,
-    model_name: str = "all-MiniLM-L6-v2",
-) -> Direction:
-    # Base direction from semantic poles (preferred). Fallback to extremeness-derived direction.
+def _direction_from_context(tok: Token, *, axis: Axis, model_name: str) -> Direction:
+    """
+    Direction inference contract (FIXED):
+      - base_dir from semantic poles; if None, fall back to axis-extremeness direction.
+      - degree_op modifies intent:
+          MORE -> keep base_dir
+          LESS -> invert(base_dir)
+          CAP  -> invert(base_dir)  ("too bright" => want lower brightness)
+      - negation flips ONLY when op is NONE (plain "not bright", "not muddy").
+        For "not too X", negation scopes over "too" and MUST NOT flip again.
+    """
     base_dir = _semantic_direction(tok, axis=axis, model_name=model_name)
     if base_dir is None:
-        _ext, base_dir = _axis_extremeness(tok, axis=axis, model_name=model_name)
+        _ext, ext_dir = _axis_extremeness(tok, axis=axis, model_name=model_name)
+        base_dir = ext_dir
 
     op, _ = _degree_operator(tok, model_name=model_name)
     neg = _has_negation_anywhere(tok, model_name=model_name)
 
+    if op == "MORE":
+        return base_dir
     if op == "LESS":
-        direction = _invert_dir(base_dir)
-    elif op == "CAP":
-        direction = _invert_dir(base_dir) if neg else base_dir
-    else:
-        direction = base_dir
+        return _invert_dir(base_dir)
+    if op == "CAP":
+        # "too X" or "not too X" => avoid the implied extreme => invert base_dir
+        return _invert_dir(base_dir)
 
-    if neg and op != "CAP":
-        direction = _invert_dir(direction)
-
-    return direction
+    # NONE: plain negation flips
+    return _invert_dir(base_dir) if neg else base_dir
 
 
 def _evidence(tok: Token, *, model_name: str = "all-MiniLM-L6-v2") -> tuple[str, int, int]:
@@ -809,7 +867,6 @@ def _evidence(tok: Token, *, model_name: str = "all-MiniLM-L6-v2") -> tuple[str,
     last = toks[-1]
     end = last.idx + len(last.text)
 
-    # normalize token text (handle n't -> not) and force lowercase for contract stability
     ev_parts = [_norm_text_piece(t.text) for t in toks]
     evidence = " ".join(" ".join(ev_parts).split()).strip().lower()
 
@@ -819,6 +876,7 @@ def _evidence(tok: Token, *, model_name: str = "all-MiniLM-L6-v2") -> tuple[str,
 # ---------------------------------------------------------------------
 # Candidate selection fixes (STOP treating domain nouns like "lipstick" as constraints)
 # ---------------------------------------------------------------------
+
 
 def _redirect_to_amod_adj(tok: Token) -> Token:
     """
@@ -1028,8 +1086,7 @@ def extract_constraints_from_doc(
         fam = str(axis_meta.get("axis_family") or _family(axis))
 
         has_signal = bool(
-            _has_negation_anywhere(tok, model_name=mapper_model)
-            or _has_degree_anywhere(tok, axis=axis, model_name=mapper_model)
+            _has_negation_anywhere(tok, model_name=mapper_model) or _has_degree_anywhere(tok, axis=axis, model_name=mapper_model)
         )
         head_domain = _head_is_domain_noun(tok)
 
