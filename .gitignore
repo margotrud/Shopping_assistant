@@ -4,15 +4,35 @@
 # - Keep only code and lightweight configs under version control
 # =====================================================
 
-# Ignore all local data by default
-/data/
+# Ignore everything under data by default (but keep the folder itself)
+ /data/*
+
+# Re-allow runtime asset directories
+!data/colors/
+!data/nlp/
+!data/models/
+
+# Re-allow runtime JSON assets
+!data/colors/**/*.json
+!data/nlp/**/*.json
+!data/models/**/*.json
+
+# Explicitly ignore heavy/generated subtrees (even if present)
+data/cache/
+data/enriched_data/
+data/reports/
+data/ml/reports/
+
+# Ignore images inside data (chips, plots, etc.)
+data/**/*.png
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.avif
+data/**/*.webp
 
 # Optional extra local data locations
 Scripts/tools/data/
 **/_tmp_*/
-
-# If needed, ignore images / json ONLY inside data
-data/**/*.png
 
 
 # =====================================================
@@ -74,3 +94,15 @@ build/
 # local artifacts
 Scripts/tools/data_product_image_cache/
 *.zip
+
+
+# Generated datasets / heavy artifacts (never commit)
+data/*.csv
+data/**/*.csv
+data/**/*.parquet
+data/**/*.pkl
+
+# Temporary/debug outputs
+data/tmp_*.csv
+data/**/tmp_*.csv
+data/nlp/*_report.json
