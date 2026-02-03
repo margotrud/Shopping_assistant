@@ -48,6 +48,17 @@ from ._pooling import (
 from ._domain_anchor import _domain_anchor_from_naming_probs
 
 
+# -----------------------------------------------------------------------------
+# Local helpers
+# -----------------------------------------------------------------------------
+def _adaptive_hue_band_deg(anchor_C: float) -> float:
+    """
+    Low-chroma anchors (e.g. nude) must stay tightly hue-bounded to prevent drift.
+    High-chroma anchors can use a wider band.
+    """
+    return float(np.clip(18.0 + 0.20 * float(anchor_C), 18.0, 36.0))
+
+
 # =============================================================================
 # ANCHOR-ONLY API (no scoring, no inventory)
 # =============================================================================
@@ -300,6 +311,48 @@ def recommend_from_text(
         if pool_cap > 0 and len(df_pool) > pool_cap:
             df_pool = df_pool.head(pool_cap).copy()
 
+        # constraint-aware widening (generic): avoid "frozen" pools on low-chroma anchors
+        # IMPORTANT: widen inside a hue band first to prevent drift (e.g. nude -> pink)
+        nlp_constraints_A = tuple(getattr(nlp_res, "constraints", ()) or ())
+        if nlp_constraints_A:
+            min_pool_cons = max(int(_POOL_FALLBACK_MIN_N), 120)
+            if len(df_pool) < int(min_pool_cons):
+                aC = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
+                band_deg = float(_adaptive_hue_band_deg(aC))
+
+                hue_cand, _hdbg_cons = _hue_band_subset(
+                    inv_eff,
+                    anchor_hex=anchor_hex,
+                    anchor_lab=tuple(map(float, anchor_eff)),
+                    band_deg=float(band_deg),
+                )
+                base_df = hue_cand if len(hue_cand) > 0 else inv_eff
+
+                df_pool2, adbg_cons = _adaptive_de00_pool(
+                    base_df,
+                    anchor_lab=tuple(map(float, anchor_eff)),
+                    thr_base=float(thr_used),
+                    min_n=int(min_pool_cons),
+                    cap=float(_POOL_FALLBACK_DE00_CAP),
+                )
+                if not df_pool2.empty:
+                    pool_n_before = int(len(df_pool))
+                    df_pool = df_pool2
+                    if pool_cap > 0 and len(df_pool) > pool_cap:
+                        df_pool = df_pool.head(pool_cap).copy()
+                    if debug:
+                        dbg = dict(adbg_cons)
+                        dbg["gate"] = {
+                            "reason": "constraints_pool_widening_hue_bounded",
+                            "pool_n_before": int(pool_n_before),
+                            "pool_n_after": int(len(df_pool)),
+                            "min_pool_cons": int(min_pool_cons),
+                            "thr_base": float(thr_used),
+                            "hue_band_used": bool(len(hue_cand) > 0),
+                            "hue_band_deg": float(band_deg),
+                        }
+                        print("  FAILSAFE: constraints-based adaptive ΔE used", dbg)
+
         if debug:
             aC = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
             print("\n[PHASE A]")
@@ -408,6 +461,9 @@ def recommend_from_text(
     # Always add _de00_anchor for inspection
     if has_color and anchor_eff is not None:
         df_pool = _ensure_de00_anchor_col(df_pool, tuple(map(float, anchor_eff)))
+        # clamp deltaE_norm if present (prevents unstable scaling when >1)
+        if "deltaE_norm" in df_pool.columns:
+            df_pool["deltaE_norm"] = df_pool["deltaE_norm"].clip(lower=0.0, upper=1.0)
 
     # ==========================
     # PHASE B — scoring
@@ -470,6 +526,23 @@ def recommend_from_text(
 
     # Restore dropped feature columns (incl. light_hsl expected by tests)
     scored = _restore_feature_cols(df_pool, scored)
+
+    # --------------------------
+    # Anchor-fidelity prior (prevents drift when pool widens under constraints)
+    # --------------------------
+    if has_color and anchor_eff is not None and "deltaE_norm" in scored.columns:
+        has_cons = bool(nlp_constraints)
+
+        aC = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
+        if has_cons:
+            w = 2.25 if aC < 25.0 else 1.50
+        else:
+            w = 0.75
+
+        base = scored["score_total"] if "score_total" in scored.columns else (scored["score"] if "score" in scored.columns else None)
+        if base is not None:
+            scored = scored.copy()
+            scored["score_total"] = base - float(w) * scored["deltaE_norm"]
 
     score_col = "score_total" if "score_total" in scored.columns else ("score" if "score" in scored.columns else None)
     if score_col is None:
