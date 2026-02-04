@@ -1,10 +1,10 @@
 # =====================================================
 # Project data
 # - Ignore all local datasets and generated artifacts
-# - Keep only code and lightweight configs under version control
+# - Keep only lightweight runtime JSON assets
 # =====================================================
 
-# Ignore everything under data by default (but keep the folder itself)
+# Ignore everything under data by default
 /data/*
 
 # Re-allow runtime asset directories
@@ -17,51 +17,43 @@
 !data/nlp/**/*.json
 !data/models/**/*.json
 
-# Explicitly ignore heavy/generated subtrees (even if present)
+
+# =====================================================
+# Heavy / generated data (never commit)
+# =====================================================
+
 data/cache/
 data/enriched_data/
 data/reports/
-data/ml/reports/
-
-# Ignore images inside data (chips, plots, etc.)
-data/**/*.png
-data/**/*.jpg
-data/**/*.jpeg
-data/**/*.avif
-data/**/*.webp
-
-# Optional extra local data locations
-Scripts/tools/data/
-**/_tmp_*/
-
-
-# =====================================================
-# Build artifacts / opaque blobs (NOT for version control)
-# =====================================================
-
+data/ml/
 data/bin/
-data/**/_chip_cache/
-data/**/*.bin
-
-
-# =====================================================
-# Generated scoring outputs (NOT for version control)
-# =====================================================
-
-data/scored_cluster_*.csv
-data/**/scored_cluster_*.csv
 data/scores/
 
 
 # =====================================================
-# Local experiments / scratch files
+# Generated datasets / scoring outputs
 # =====================================================
 
+data/**/*.csv
+data/**/*.parquet
+data/**/*.pkl
+data/scored_cluster_*.csv
+data/**/scored_cluster_*.csv
+
+
+# =====================================================
+# Temporary / debug outputs
+# =====================================================
+
+data/tmp_*.csv
+data/**/tmp_*.csv
+data/nlp/*_report.json
 small_test.py
+**/_tmp_*/
 
 
 # =====================================================
-# Python / build
+# Python / build artifacts
 # =====================================================
 
 __pycache__/
@@ -90,29 +82,11 @@ build/
 .venv/
 .streamlit/secrets.toml
 
-# local artifacts
+
+# =====================================================
+# Local / user-specific artifacts
+# =====================================================
+
+Scripts/env.sh
 Scripts/tools/data_product_image_cache/
 *.zip
-
-
-# Generated datasets / heavy artifacts (never commit)
-data/*.csv
-data/**/*.csv
-data/**/*.parquet
-data/**/*.pkl
-
-# Temporary/debug outputs
-data/tmp_*.csv
-data/**/tmp_*.csv
-data/nlp/*_report.json
-
-
-# local env
-Scripts/env.sh
-
-# local ML scratch (never commit)
-data/ml/
-
-# Never commit caches under src
-src/**/__pycache__/
-src/**/*.pyc
