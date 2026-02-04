@@ -58,7 +58,6 @@ data/scores/
 # =====================================================
 
 small_test.py
-src/Shopping_assistant/nlp/models/
 
 
 # =====================================================
@@ -113,3 +112,7 @@ Scripts/env.sh
 
 # local ML scratch (never commit)
 data/ml/
+
+# Never commit caches under src
+src/**/__pycache__/
+src/**/*.pyc
