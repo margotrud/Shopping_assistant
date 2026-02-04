@@ -1,4 +1,11 @@
 # src/Shopping_assistant/reco/_filters.py
+"""
+Inventory filtering utilities.
+
+Applies validity checks and domain-specific exclusion rules
+to product inventories prior to pooling and scoring.
+"""
+
 from __future__ import annotations
 
 import pandas as pd

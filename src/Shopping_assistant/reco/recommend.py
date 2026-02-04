@@ -1,5 +1,15 @@
 # src/Shopping_assistant/reco/recommend.py
+
+"""
+Text-to-shade recommendation pipeline.
+
+Resolves color anchors from NLP, builds adaptive candidate pools,
+applies constraint-aware scoring, and returns ranked product shades.
+"""
+
 from __future__ import annotations
+
+import logging
 
 import numpy as np
 import pandas as pd
@@ -33,9 +43,14 @@ from ._constants import (
     _POOL_FALLBACK_DE00_CAP,
     _POOL_FALLBACK_MIN_N,
 )
+from ._domain_anchor import _domain_anchor_from_naming_probs
 from ._family_constraints import _family_specs_from_nlp
 from ._filters import _filter_invalid_products
-from ._naming_probs import _attach_naming_probs, _load_family_label_distributions, _naming_prob_label_supported
+from ._naming_probs import (
+    _attach_naming_probs,
+    _load_family_label_distributions,
+    _naming_prob_label_supported,
+)
 from ._pooling import (
     _adaptive_de00_pool,
     _anchor_inventory_coverage,
@@ -45,7 +60,8 @@ from ._pooling import (
     _pool_by_naming_prob,
     _restore_feature_cols,
 )
-from ._domain_anchor import _domain_anchor_from_naming_probs
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -115,6 +131,7 @@ def _wants_hi_chroma(nlp_res) -> bool:
         if not isinstance(ws, dict) or not isinstance(wsum, dict):
             return False
         try:
+
             def avg(ax: str) -> float:
                 num = float(ws.get(ax, 0.0))
                 den = float(wsum.get(ax, 0.0))
@@ -189,11 +206,11 @@ def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
     }
 
     if debug:
-        print("\n[ANCHOR-ONLY]")
-        print(f"  text={text!r}")
-        print(f"  has_color={has_color}")
-        print(f"  anchor_source={out['anchor_source']!r}")
-        print(f"  anchor_hex={anchor_hex}  anchor_lab={anchor_lab}")
+        logger.debug("ANCHOR-ONLY")
+        logger.debug("text=%r", text)
+        logger.debug("has_color=%s", has_color)
+        logger.debug("anchor_source=%r", out["anchor_source"])
+        logger.debug("anchor_hex=%s anchor_lab=%s", anchor_hex, anchor_lab)
 
     return out
 
@@ -205,25 +222,14 @@ def resolve_effective_anchor_from_text(
     debug: bool = False,
 ) -> dict:
     """
-    Resolve BOTH:
-      - lexicon anchor (same as resolve_anchor_from_text)
-      - effective anchor used by recommend_from_text for:
-          * plain-color queries
-          * hi-chroma intent (bright/vivid -> fuchsia-like)
+    Resolve the effective color anchor for a free-text query (no scoring).
 
-    Returns:
-      {
-        anchor_hex,
-        anchor_lab_lexicon,
-        anchor_lab_effective,
-        has_color,
-        family_label,
-        family_label_in_dists (bool),
-        used_domain_anchor (bool),
-        hi_chroma (bool),
-        chroma_q (float|None),
-      }
+    Does: parse NLP output and return both the lexicon anchor and the effective anchor
+    actually used by recommend_from_text (including domain / hi-chroma adjustments).
+    Returns: dict with anchor_lab_effective, anchor_lab_lexicon, anchor_hex, family info,
+    and flags describing how the anchor was derived.
     """
+
     if assets is None:
         assets = load_default_assets()
 
@@ -258,12 +264,13 @@ def resolve_effective_anchor_from_text(
     anchor_eff = anchor_lab
     used_domain = False
 
-    # Mirror recommend_from_text behavior for anchor resolution
     cons = tuple(getattr(nlp_res, "constraints", ()) or ())
     want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
     chroma_q = 0.90 if want_hiC else None
 
-    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
+    if has_color and anchor_eff is not None and family_label is not None and (
+        _is_plain_color_query(nlp_res) or want_hiC
+    ):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
@@ -291,15 +298,13 @@ def resolve_effective_anchor_from_text(
     }
 
     if debug:
-        print("\n[ANCHOR-EFFECTIVE]")
-        print(f"  text={text!r}")
-        print(f"  has_color={has_color}")
-        print(f"  family_label={family_label!r}  in_dists={in_dists}")
-        print(f"  hi_chroma={bool(want_hiC)}  chroma_q={chroma_q}")
-        print(f"  anchor_hex={anchor_hex}")
-        print(f"  anchor_lab_lexicon={anchor_lab}")
-        print(f"  anchor_lab_effective={anchor_eff}")
-        print(f"  used_domain_anchor={used_domain}")
+        logger.debug("ANCHOR-EFFECTIVE")
+        logger.debug("text=%r", text)
+        logger.debug("has_color=%s", has_color)
+        logger.debug("family_label=%r in_dists=%s", family_label, in_dists)
+        logger.debug("hi_chroma=%s chroma_q=%s", bool(want_hiC), chroma_q)
+        logger.debug("anchor_hex=%s", anchor_hex)
+        logger.debug("anchor_lab_lexicon=%s", anchor_lab)
 
     return out
 
@@ -318,9 +323,12 @@ def recommend_from_text(
     debug: bool = False,
 ) -> pd.DataFrame:
     """
-    Recommendation mode (scoring).
-    If you want only anchors (no pool, no scoring), call resolve_anchor_from_text().
+    Score and return top-K lipstick shades for a free-text preference query.
+
+    Does: parse NLP constraints + anchor, build a candidate pool, then score shades and return a ranked DataFrame.
+    Returns: pandas DataFrame sorted by score (topk rows), including scoring columns (and deltaE_norm when anchor is used).
     """
+
     if assets is None:
         assets = load_default_assets()
 
@@ -342,10 +350,7 @@ def recommend_from_text(
 
     anchor_eff = anchor_lab
 
-    # Attach naming probs onto inventory once (needed for domain anchor + naming pool + family constraints)
     inv = _attach_naming_probs(inv)
-
-    # Precompute label_distributions + family label once
     dists = _load_family_label_distributions()
 
     family_label = None
@@ -360,14 +365,13 @@ def recommend_from_text(
             elif _naming_prob_label_supported(tok, inv_with_probs=inv):
                 family_label, family_in_dists = tok, False
 
-    # Domain anchor:
-    # - baseline for plain-color queries
-    # - chroma-focused domain anchor ONLY when NLP explicitly requests high chroma
     cons = tuple(getattr(nlp_res, "constraints", ()) or ())
     want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
     chroma_q = 0.90 if want_hiC else None
 
-    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
+    if has_color and anchor_eff is not None and family_label is not None and (
+        _is_plain_color_query(nlp_res) or want_hiC
+    ):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
@@ -379,13 +383,16 @@ def recommend_from_text(
         if dom is not None:
             anchor_eff = dom
             if debug:
-                print("\n[DOMAIN ANCHOR]")
-                print(
-                    f"  family_label={family_label!r} p_min={_DOMAIN_ANCHOR_P_MIN} in_dists={family_in_dists} "
-                    f"hi_chroma={bool(want_hiC)}"
+                logger.debug("DOMAIN ANCHOR")
+                logger.debug(
+                    "family_label=%r p_min=%s in_dists=%s hi_chroma=%s",
+                    family_label,
+                    _DOMAIN_ANCHOR_P_MIN,
+                    family_in_dists,
+                    bool(want_hiC),
                 )
-                print(f"  anchor_lab_lexicon={anchor_lab}")
-                print(f"  anchor_lab_domain ={anchor_eff}")
+                logger.debug("anchor_lab_lexicon=%s", anchor_lab)
+                logger.debug("anchor_lab_domain=%s", anchor_eff)
 
     # ==========================
     # PHASE A — strict pool (+ hue-family fallback) + failsafes
@@ -428,7 +435,6 @@ def recommend_from_text(
             df_pool = df_pool.head(pool_cap).copy()
 
         # constraint-aware widening (generic): avoid "frozen" pools on low-chroma anchors
-        # IMPORTANT: widen inside a hue band first to prevent drift (e.g. nude -> pink)
         nlp_constraints_A = tuple(getattr(nlp_res, "constraints", ()) or ())
         if nlp_constraints_A:
             min_pool_cons = max(int(_POOL_FALLBACK_MIN_N), 120)
@@ -467,35 +473,42 @@ def recommend_from_text(
                             "hue_band_used": bool(len(hue_cand) > 0),
                             "hue_band_deg": float(band_deg),
                         }
-                        print("  FAILSAFE: constraints-based adaptive ΔE used", dbg)
+                        logger.debug("FAILSAFE: constraints-based adaptive ΔE used %s", dbg)
 
         if debug:
             aC = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
-            print("\n[PHASE A]")
-            print(f"  text={text!r}")
-            print(f"  has_color={has_color}")
-            print(
-                f"  anchor_source={_anchor_source_mode()!r}  "
-                f"anchor_lab_raw={anchor_lab}  anchor_hex={anchor_hex}  "
-                f"anchor_lab_eff={anchor_eff}  anchor_C_eff={aC:.2f}"
+            logger.debug("PHASE A")
+            logger.debug("text=%r", text)
+            logger.debug(
+                "has_color=%s anchor_source=%r anchor_lab_raw=%s anchor_hex=%s anchor_lab_eff=%s anchor_C_eff=%.2f",
+                has_color,
+                _anchor_source_mode(),
+                anchor_lab,
+                anchor_hex,
+                anchor_eff,
+                aC,
             )
-            print(
-                f"  hue_fallback_used={bool(fb_dbg.get('fallback_used'))}"
-                f"  hue_source={fb_dbg.get('hue_source')}"
+            logger.debug(
+                "hue_fallback_used=%s hue_source=%s",
+                bool(fb_dbg.get("fallback_used")),
+                fb_dbg.get("hue_source"),
             )
             if fb_dbg.get("fallback_used"):
                 h0 = fb_dbg.get("H0")
-                print(f"  hue_H0={h0}  cand_n={fb_dbg.get('cand_n')}  cthr={fb_dbg.get('cthr')}")
-            print(
-                f"  de00_thr={thr_used:.2f}  pool_cap={pool_cap}  pool_n={len(df_pool)}  "
-                f"inv_n={len(inv)}  inv_eff_n={len(inv_eff)}"
+                logger.debug("hue_H0=%s cand_n=%s cthr=%s", h0, fb_dbg.get("cand_n"), fb_dbg.get("cthr"))
+            logger.debug(
+                "de00_thr=%.2f pool_cap=%d pool_n=%d inv_n=%d inv_eff_n=%d",
+                float(thr_used),
+                int(pool_cap),
+                int(len(df_pool)),
+                int(len(inv)),
+                int(len(inv_eff)),
             )
-            print(f"  coverage_all: min_de00={min_de_all:.2f}  n_support<=thr={n_support_all}")
-            print(f"  coverage_eff: min_de00={min_de_eff:.2f}  n_support<=thr={n_support_eff}")
+            logger.debug("coverage_all: min_de00=%.2f n_support<=thr=%d", float(min_de_all), int(n_support_all))
+            logger.debug("coverage_eff: min_de00=%.2f n_support<=thr=%d", float(min_de_eff), int(n_support_eff))
 
         # FAILSAFE PATHS
         if df_pool.empty or (len(df_pool) < int(_POOL_FALLBACK_MIN_N)):
-            # Fallback 1: adaptive ΔE pool on inv_eff
             df_pool2, adbg = _adaptive_de00_pool(
                 inv_eff,
                 anchor_lab=tuple(map(float, anchor_eff)),
@@ -504,7 +517,6 @@ def recommend_from_text(
                 cap=float(_POOL_FALLBACK_DE00_CAP),
             )
 
-            # Fallback 2: if still empty/tiny -> hue-band subset then adaptive ΔE
             if df_pool2.empty or len(df_pool2) < int(_POOL_FALLBACK_MIN_N):
                 hue_cand, hdbg = _hue_band_subset(
                     inv_eff,
@@ -523,19 +535,18 @@ def recommend_from_text(
                     if len(df_pool3) > 0:
                         df_pool2 = df_pool3
                         if debug:
-                            print("  FAILSAFE: hue-band subset used", hdbg, adbg2)
+                            logger.debug("FAILSAFE: hue-band subset used %s %s", hdbg, adbg2)
 
             df_pool = df_pool2
             if pool_cap > 0 and len(df_pool) > pool_cap:
                 df_pool = df_pool.head(pool_cap).copy()
 
             if debug:
-                print("  FAILSAFE: adaptive ΔE used", adbg)
+                logger.debug("FAILSAFE: adaptive ΔE used %s", adbg)
 
             if df_pool.empty:
                 return df_pool
 
-        # UPDATED FAILSAFE (coherent gate): naming-prob pool when effective support is weak
         req_label = _first_color_token_from_nlp(nlp_res)
         use_naming_pool = False
         if req_label and _naming_prob_label_supported(req_label, inv_with_probs=inv_eff):
@@ -564,20 +575,18 @@ def recommend_from_text(
                         "thr_used": float(thr_used),
                         "pool_n_before": int(len(name_pool)),
                     }
-                    print("  FAILSAFE: naming-prob pool used", ndbg)
+                    logger.debug("FAILSAFE: naming-prob pool used %s", ndbg)
 
     else:
         df_pool = inv.head(pool_cap).copy()
         if debug:
-            print("\n[PHASE A]")
-            print(f"  text={text!r}")
-            print(f"  has_color={has_color}  anchor_lab={anchor_lab}")
-            print(f"  pool_cap={pool_cap}  pool_n={len(df_pool)}  inv_n={len(inv)}")
+            logger.debug("PHASE A")
+            logger.debug("text=%r", text)
+            logger.debug("has_color=%s anchor_lab=%s", has_color, anchor_lab)
+            logger.debug("pool_cap=%d pool_n=%d inv_n=%d", int(pool_cap), int(len(df_pool)), int(len(inv)))
 
-    # Always add _de00_anchor for inspection
     if has_color and anchor_eff is not None:
         df_pool = _ensure_de00_anchor_col(df_pool, tuple(map(float, anchor_eff)))
-        # clamp deltaE_norm if present (prevents unstable scaling when >1)
         if "deltaE_norm" in df_pool.columns:
             df_pool["deltaE_norm"] = df_pool["deltaE_norm"].clip(lower=0.0, upper=1.0)
 
@@ -588,7 +597,7 @@ def recommend_from_text(
     query = QuerySpec(anchor_lab=anchor_eff, constraints=nlp_constraints)
 
     if debug and nlp_constraints:
-        print("\n[PHASE B][CONSTRAINTS]")
+        logger.debug("PHASE B: CONSTRAINTS")
         for c in nlp_constraints:
             axis = getattr(c, "axis", None)
             direction = getattr(c, "direction", None)
@@ -598,31 +607,47 @@ def recommend_from_text(
             axis = axis.value if hasattr(axis, "value") else axis
             direction = direction.value if hasattr(direction, "value") else direction
             strength = strength.value if hasattr(strength, "value") else strength
-            print(f"  axis={axis} dir={direction} strength={strength} evidence={evidence!r} meta={meta}")
+            logger.debug(
+                "axis=%s dir=%s strength=%s evidence=%r meta=%s",
+                axis,
+                direction,
+                strength,
+                evidence,
+                meta,
+            )
 
     df_pool = _attach_naming_probs(df_pool)
 
-    # within-family constraints require: label in distributions + distributions loaded
     family_label_for_constraints = family_label if (family_label is not None and family_in_dists and bool(dists)) else None
     family_specs = _family_specs_from_nlp(nlp_constraints) if (family_label_for_constraints is not None) else []
 
     if debug:
-        print("\n[PHASE B][FAMILY-CONSTRAINTS]")
-        print(f"  family_label={family_label!r}  in_dists={family_in_dists}")
-        print(f"  specs_n={len(family_specs)}")
+        logger.debug("PHASE B: FAMILY-CONSTRAINTS")
+        logger.debug("family_label=%r in_dists=%s", family_label, family_in_dists)
+        logger.debug("specs_n=%d", int(len(family_specs)))
         if family_label is not None:
             pcol = f"p_{family_label}"
-            print(
-                f"  pcol_present={pcol in df_pool.columns}  "
-                f"p_min={_FAMILY_P_MIN}  p_hi={_FAMILY_P_HI}  floor={_FAMILY_FLOOR}"
+            logger.debug(
+                "pcol_present=%s p_min=%s p_hi=%s floor=%s",
+                (pcol in df_pool.columns),
+                _FAMILY_P_MIN,
+                _FAMILY_P_HI,
+                _FAMILY_FLOOR,
             )
         if family_label_for_constraints is None:
-            print("  within_family_applied=False")
+            logger.debug("within_family_applied=False")
         else:
-            print("  within_family_applied=True")
+            logger.debug("within_family_applied=True")
             if family_specs:
                 for s in family_specs:
-                    print(f"   - {s.axis}:{s.direction} q_lo={s.q_lo} q_hi={s.q_hi} strength={s.strength}")
+                    logger.debug(
+                        "spec axis=%s dir=%s q_lo=%s q_hi=%s strength=%s",
+                        s.axis,
+                        s.direction,
+                        s.q_lo,
+                        s.q_hi,
+                        s.strength,
+                    )
 
     scored = score_shades(
         df_pool,
@@ -631,7 +656,6 @@ def recommend_from_text(
         lambda_preference=float(lambda_preference),
         calibration=assets.calibration,
         preference_weights=getattr(assets, "preference_weights", None),
-        # within-family (only applied if label+specs exist AND label_distributions supports it)
         constraint_label=family_label_for_constraints,
         constraint_specs=family_specs,
         label_distributions=dists if (family_label_for_constraints is not None and dists) else None,
@@ -640,15 +664,10 @@ def recommend_from_text(
         constraint_floor=float(_FAMILY_FLOOR),
     )
 
-    # Restore dropped feature columns (incl. light_hsl expected by tests)
     scored = _restore_feature_cols(df_pool, scored)
-    # Ensure anchor is present on the final returned DF (restore_feature_cols may drop it)
     if has_color and anchor_eff is not None:
         scored = _ensure_de00_anchor_col(scored, tuple(map(float, anchor_eff)))
 
-    # --------------------------
-    # Anchor-fidelity prior (prevents drift when pool widens under constraints)
-    # --------------------------
     if has_color and anchor_eff is not None and "deltaE_norm" in scored.columns:
         has_cons = bool(nlp_constraints)
 

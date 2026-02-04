@@ -1,4 +1,11 @@
 # src/Shopping_assistant/nlp/parsing/constraints.py
+"""
+Constraint parsing logic.
+
+Extracts structured constraint signals (axis, direction, strength)
+from NLP outputs for downstream filtering and scoring.
+"""
+
 from __future__ import annotations
 
 import math

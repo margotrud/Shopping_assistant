@@ -1,5 +1,11 @@
 # src/Shopping_assistant/color/scoring.py
 from __future__ import annotations
+"""
+Shade scoring engine.
+
+Combines color-distance, NLP-derived constraints, optional preferences,
+and calibration to produce final ranking scores for candidate shades.
+"""
 
 import argparse
 import json
@@ -10,6 +16,8 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import logging
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Constraint",
@@ -142,6 +150,13 @@ class Constraint:
 
 @dataclass(frozen=True)
 class QuerySpec:
+    """
+    Structured specification of a scoring query.
+
+    Holds the effective anchor (Lab) and the normalized symbolic constraints
+    extracted from NLP. Passed to score_shades to compute constraint-aware
+    ranking over candidate shades.
+    """
     constraints: Tuple[Constraint, ...] = ()
     # anchor used when prototypes are not provided (or to override prototype center)
     anchor_lab: Optional[Tuple[float, float, float]] = None
@@ -1082,7 +1097,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     outpath = outdir / "scores_anchor.csv"
     scored.to_csv(outpath, index=False)
-    print(f"[OK] Wrote {outpath}")
+    logger.debug(f"Wrote {outpath}")
 
 
 if __name__ == "__main__":

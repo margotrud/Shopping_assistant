@@ -3,6 +3,7 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
+from Shopping_assistant.reco._colorconv import _hex_to_lab
 
 # === CONFIG ===
 INPUT_CSV = Path("data/enriched_data/Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv")
@@ -39,10 +40,6 @@ def xyz_to_lab(x, y, z):
     b = 200 * (fy - fz)
     return L, a, b
 
-def hex_to_lab(hex_str):
-    r, g, b = hex_to_rgb01(hex_str)
-    x, y, z = rgb_to_xyz(r, g, b)
-    return xyz_to_lab(x, y, z)
 
 # === MAIN ===
 def main():
@@ -51,7 +48,7 @@ def main():
     # Adapter le nom exact si besoin
     df = df[["chip_hex"]].dropna().drop_duplicates()
 
-    labs = df["chip_hex"].apply(hex_to_lab)
+    labs = df["chip_hex"].apply(_hex_to_lab)
     df[["L", "a", "b"]] = pd.DataFrame(labs.tolist(), index=df.index)
 
     df["C"] = np.sqrt(df["a"] ** 2 + df["b"] ** 2)

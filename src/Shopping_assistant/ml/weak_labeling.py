@@ -10,6 +10,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
@@ -226,7 +228,7 @@ def main() -> None:
     merged = attach_features(weak, enriched, cfg=cfg)
 
     split_and_save(merged, Path(args.outdir), cfg=cfg)
-    print(str(Path(args.outdir).resolve() / "weak_labels.csv"))
+    logger.debug("%s", Path(args.outdir).resolve() / "weak_labels.csv")
 
 
 if __name__ == "__main__":

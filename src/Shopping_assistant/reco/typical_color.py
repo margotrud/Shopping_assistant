@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from ._colorconv import _hex_to_lab
 
 # ---------- hex -> Lab (D65), CIE76 ----------
 def _hex_to_rgb01(h: str) -> Tuple[float, float, float]:
@@ -43,12 +44,6 @@ def _xyz_to_lab(x: float, y: float, z: float) -> Tuple[float, float, float]:
     b = 200 * (fy - fz)
     return float(L), float(a), float(b)
 
-
-def hex_to_lab(hexstr: str) -> Tuple[float, float, float]:
-    r, g, b = _hex_to_rgb01(hexstr)
-    return _xyz_to_lab(*_rgb_to_xyz(r, g, b))
-
-
 def _deltaE76(lab: np.ndarray, seed: np.ndarray) -> np.ndarray:
     return np.linalg.norm(lab - seed[None, :], axis=1)
 
@@ -62,7 +57,7 @@ def _safe_hex_to_lab(x: str) -> Tuple[float, float, float] | None:
         if len(s2) != 6:
             return None
         int(s2, 16)  # validate hex
-        return hex_to_lab("#" + s2)
+        return _hex_to_lab("#" + s2)
     except Exception:
         return None
 
@@ -105,7 +100,7 @@ def apply_typical_median_near_seed(
         return out
 
     try:
-        seed = np.array(hex_to_lab(seed_hex), dtype=float)
+        seed = np.array(_hex_to_lab(seed_hex), dtype=float)
     except Exception:
         return out
 

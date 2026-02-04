@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 import requests
+from Shopping_assistant.reco._colorconv import _hex_to_lab
 
 # ------------------------------------------------------------------------------
 # Bootstrap project root
@@ -68,30 +69,6 @@ def hex_to_rgb01(h: str):
 def srgb_to_linear(c):
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
-
-def hex_to_lab(h: str):
-    r, g, b = hex_to_rgb01(h)
-    r, g, b = map(srgb_to_linear, (r, g, b))
-
-    X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
-    Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
-    Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
-
-    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
-    x, y, z = X / Xn, Y / Yn, Z / Zn
-
-    d = 6 / 29
-
-    def f(t):
-        return t ** (1 / 3) if t > d**3 else (t / (3 * d**2) + 4 / 29)
-
-    fx, fy, fz = f(x), f(y), f(z)
-    L = 116 * fy - 16
-    a = 500 * (fx - fy)
-    b = 200 * (fy - fz)
-    return float(L), float(a), float(b)
-
-
 # ------------------------------------------------------------------------------
 # Fetch + cache color-name-lists blob
 # ------------------------------------------------------------------------------
@@ -146,7 +123,7 @@ def main():
                 continue
 
             try:
-                L, a, b = hex_to_lab(hx)
+                L, a, b = _hex_to_lab(hx)
             except Exception:
                 continue
 

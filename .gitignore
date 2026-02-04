@@ -5,7 +5,7 @@
 # =====================================================
 
 # Ignore everything under data by default (but keep the folder itself)
- /data/*
+/data/*
 
 # Re-allow runtime asset directories
 !data/colors/
@@ -106,3 +106,10 @@ data/**/*.pkl
 data/tmp_*.csv
 data/**/tmp_*.csv
 data/nlp/*_report.json
+
+
+# local env
+Scripts/env.sh
+
+# local ML scratch (never commit)
+data/ml/

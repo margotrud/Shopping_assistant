@@ -11,12 +11,22 @@ large datasets, trained models, and generated artifacts are excluded.
 ## Installation
 
 ```bash
-python -m venv .venv
-# activate the virtual environment
+git clone <repo-url>
+cd pythonProject
 pip install -e .
+python -m spacy download en_core_web_sm
 ```
 
-The project uses a `src/` layout and must be installed (editable mode recommended).
+### Optional dependencies
+
+```bash
+pip install -e .[dev]
+pip install -e .[embeddings]
+pip install -e .[scrape]
+```
+
+The project uses a `src/` layout and must be installed
+(editable mode recommended for development).
 
 ---
 
@@ -25,15 +35,15 @@ The project uses a `src/` layout and must be installed (editable mode recommende
 Some NLP polarity and constraint features rely on embedding-based similarity
 (`sentence-transformers`).
 
-Install it only if you want full NLP behavior and to run all tests:
+Install it **only** if you want full NLP behavior and to run all tests:
 
 ```bash
 pip install sentence-transformers
 ```
 
 If not installed:
-- Core recommendation still works
-- Related NLP tests are automatically skipped
+- Core recommendation logic still works
+- Embedding-dependent NLP tests are automatically skipped
 
 ---
 
@@ -48,7 +58,7 @@ pytest -q
 ## Example usage
 
 ```bash
-python -c """
+python -c "
 from Shopping_assistant.reco.recommend import recommend_from_text
 
 df = recommend_from_text(
@@ -57,7 +67,7 @@ df = recommend_from_text(
 )
 
 print(df.head())
-"""
+"
 ```
 
 ---
@@ -65,25 +75,27 @@ print(df.head())
 ## Data policy
 
 This repository **does not include**:
-- Full product inventories (CSV)
+- Full product inventories (CSV / scraped data)
 - Training datasets
 - Trained ML models
 - Generated plots or reports
+- Cached product images
 
 Only **runtime configuration assets** are versioned:
 - Color and NLP lexicons (`data/colors/*.json`, `data/nlp/*.json`)
 - Scoring and calibration configs (`data/models/*.json`)
 
-This keeps the repo:
+This keeps the repository:
 - Fast to clone
 - Easy to review
-- Suitable for GitHub and portfolio use
+- Suitable for GitHub and portfolio evaluation
 
 ---
 
 ## Scope
 
 This is a **portfolio / research project**, not a production system.
+
 Design decisions favor:
 - Transparency
 - Explicit heuristics

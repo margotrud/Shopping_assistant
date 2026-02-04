@@ -1,4 +1,11 @@
 # src/Shopping_assistant/reco/_pooling.py
+"""
+Candidate pooling and fallback strategies.
+
+Builds and adapts color candidate pools using distance thresholds,
+hue bands, naming probabilities, and multiple failsafe mechanisms.
+"""
+
 from __future__ import annotations
 
 import numpy as np

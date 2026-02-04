@@ -1,4 +1,11 @@
 # src/Shopping_assistant/reco/_anchor.py
+"""
+Lexicon-based color anchor extraction.
+
+Derives initial color anchors and metadata from NLP outputs,
+including anchor source mode and seed color resolution.
+"""
+
 from __future__ import annotations
 
 import os

@@ -3,6 +3,7 @@ import math
 import os
 import pandas as pd
 import numpy as np
+from Shopping_assistant.reco._colorconv import _hex_to_lab
 
 # --- config ---
 ANGLE_DEG = 25.0
@@ -52,9 +53,6 @@ def xyz_to_lab(xyz):
     b = 200 * (fy - fz)
     return L, a, b
 
-def hex_to_lab(h):
-    return xyz_to_lab(rgb01_to_xyz(hex_to_rgb01(h)))
-
 # --- load inventory ---
 path = os.environ.get("SA_ENRICHED_CSV_PATH")
 assert path, "SA_ENRICHED_CSV_PATH not set"
@@ -67,7 +65,7 @@ inv_angles = np.degrees(np.arctan2(df["b_lab"], df["a_lab"]))
 # --- test ---
 print("=== COLOR COVERAGE TEST ===")
 for color, hx in COLORS.items():
-    _, a, b = hex_to_lab(hx)
+    _, a, b = _hex_to_lab(hx)
     anchor_angle = math.degrees(math.atan2(b, a))
 
     delta = np.abs((inv_angles - anchor_angle + 180) % 360 - 180)

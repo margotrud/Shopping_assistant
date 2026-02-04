@@ -1,8 +1,18 @@
+"""
+Pairwise preference dataset construction.
+
+Builds training datasets of paired samples and labels
+used to learn user preference models.
+"""
+
+
 from __future__ import annotations
 
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -123,7 +133,6 @@ if __name__ == "__main__":
 
     df = build_dataset()
     df.to_csv(OUT_CSV, index=False)
-
-    print("[OK] Dataset generated")
-    print("rows:", len(df))
-    print(df.head())
+    logger.debug("Dataset generated")
+    logger.debug("rows=%d", len(df))
+    logger.debug("head:\n%s", df.head())

@@ -1,4 +1,11 @@
 # src/Shopping_assistant/nlp/preference.py
+"""
+NLP preference interpretation.
+
+Parses user text into structured color-related constraints,
+axes directions, and metadata used downstream for scoring.
+"""
+
 from __future__ import annotations
 
 import re
@@ -212,6 +219,16 @@ def interpret_nlp(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> NLPResult:
+
+    """
+    Parse a free-text query into structured NLP signals used by the recommender.
+
+    Does: split text into clauses, extract color mentions, infer polarity,
+    extract and normalize symbolic constraints (axes, direction, strength).
+    Returns: NLPResult containing clauses, mentions, constraints, and optional
+    diagnostics/trace when debug=True.
+    """
+
     nlp = load_spacy(spacy_model)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG

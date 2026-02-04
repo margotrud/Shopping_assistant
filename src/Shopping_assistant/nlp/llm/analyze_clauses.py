@@ -1,4 +1,11 @@
 # src/Shopping_assistant/nlp/llm/analyze_clauses.py
+"""
+LLM-based clause analysis.
+
+Analyzes user text into structured semantic clauses
+used to inform color intent and constraint resolution.
+"""
+
 from __future__ import annotations
 
 import colorsys
@@ -15,6 +22,9 @@ from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_
 from Shopping_assistant.nlp.runtime.lexicon import ColorLexicon
 from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.utils.optional_deps import require
+from Shopping_assistant.reco._colorconv import _hex_to_lab
+import logging
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public typed outputs
@@ -73,7 +83,7 @@ def _dbg(msg: str, **kv: Any) -> None:
             parts.append(f"{k}={v!r}")
         except Exception:
             parts.append(f"{k}=<unrepr>")
-    print("[COLORDBG]", " ".join(parts))
+    logger.debug("[COLORDBG] %s", " ".join(parts))
 
 
 def _pred_dbg(pred: Any) -> Dict[str, Any]:
@@ -188,35 +198,6 @@ def _hex_to_hue_deg(hx: str) -> Optional[float]:
 
 def _srgb01_to_linear(x: float) -> float:
     return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
-
-
-def _hex_to_lab(hx: str) -> Optional[Tuple[float, float, float]]:
-    rgb01 = _hex_to_rgb01(hx)
-    if rgb01 is None:
-        return None
-
-    r, g, b = rgb01
-    r, g, b = _srgb01_to_linear(r), _srgb01_to_linear(g), _srgb01_to_linear(b)
-
-    X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
-    Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
-    Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
-
-    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
-    x, y, z = X / Xn, Y / Yn, Z / Zn
-
-    d = 6 / 29
-
-    def f(t: float) -> float:
-        return t ** (1 / 3) if t > d**3 else (t / (3 * d**2) + 4 / 29)
-
-    fx, fy, fz = f(x), f(y), f(z)
-    L = 116 * fy - 16
-    a = 500 * (fx - fy)
-    b2 = 200 * (fy - fz)
-
-    return (float(L), float(a), float(b2))
-
 
 def _lab_hue_deg_from_ab(a: float, b: float) -> float:
     return float(np.degrees(np.arctan2(b, a)) % 360.0)

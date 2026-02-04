@@ -1,4 +1,11 @@
 # src/Shopping_assistant/reco/_domain_anchor.py
+"""
+Domain-specific color anchor resolution.
+
+Computes effective anchors from naming probabilities and inventory
+statistics to stabilize plain-color and high-chroma queries.
+"""
+
 from __future__ import annotations
 
 import numpy as np

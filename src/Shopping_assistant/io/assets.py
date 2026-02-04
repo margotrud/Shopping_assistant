@@ -69,9 +69,14 @@ def _find_one(root: Path, patterns: list[str], *, label: str) -> Path:
 @lru_cache(maxsize=1)
 def load_default_assets(*, root: Path | None = None) -> AssetBundle:
     """
-    Does:
-        Load AssetBundle from env paths; else strict-discover files under root (default: ./data).
+    Load the default AssetBundle used by the recommendation pipeline.
+
+    Does: load inventory CSV and calibration JSON from explicit env paths
+    (SA_ENRICHED_CSV_PATH, SA_CALIBRATION_JSON_PATH) if set; otherwise
+    discover assets under the given root (default: ./data).
+    Returns: AssetBundle with inventory (DataFrame) and calibration config (dict).
     """
+
     enriched = _env_path("SA_ENRICHED_CSV_PATH")
     calibration = _env_path("SA_CALIBRATION_JSON_PATH")
 

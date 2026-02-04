@@ -6,6 +6,7 @@ import pandas as pd
 
 from Shopping_assistant.reco.recommend import recommend_from_text
 from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
+from Shopping_assistant.reco._colorconv import _hex_to_lab
 
 TOPK = 10
 MAX_COLORS = 40
@@ -25,30 +26,6 @@ def _hex_to_rgb01(hx: str):
 
 def _srgb01_to_linear(x: float) -> float:
     return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
-
-
-def _hex_to_lab(hx: str):
-    r, g, b = _hex_to_rgb01(hx)
-    r, g, b = _srgb01_to_linear(r), _srgb01_to_linear(g), _srgb01_to_linear(b)
-
-    X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
-    Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
-    Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
-
-    Xn, Yn, Zn = 0.95047, 1.0, 1.08883
-    x, y, z = X / Xn, Y / Yn, Z / Zn
-
-    d = 6 / 29
-
-    def f(t: float) -> float:
-        return t ** (1 / 3) if t > d**3 else (t / (3 * d**2) + 4 / 29)
-
-    fx, fy, fz = f(float(x)), f(float(y)), f(float(z))
-    L = 116 * fy - 16
-    a = 500 * (fx - fy)
-    b2 = 200 * (fy - fz)
-    return float(L), float(a), float(b2)
-
 
 def _anchor_angle_from_lex(lex, color: str):
     try:

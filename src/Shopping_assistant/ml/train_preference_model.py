@@ -1,3 +1,10 @@
+"""
+Preference model training.
+
+Learns and exports user preference weights from pairwise
+comparisons for downstream recommendation scoring.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -54,13 +63,13 @@ weights = model.coef_[0]
 # OUTPUT (STDOUT)
 # ------------------------------------------------------------------
 
-print("\n[TRAINED PREFERENCE MODEL]")
-print(f"w_L = {weights[0]:.4f}")
-print(f"w_C = {weights[1]:.4f}")
-print(f"w_H = {weights[2]:.4f}")
+logger.debug("TRAINED PREFERENCE MODEL")
+logger.debug("w_L=%.4f", weights[0])
+logger.debug("w_C=%.4f", weights[1])
+logger.debug("w_H=%.4f", weights[2])
 
 norm = np.linalg.norm(weights)
-print(f"||w|| = {norm:.4f}")
+logger.debug("||w||=%.4f", norm)
 
 
 # ------------------------------------------------------------------
@@ -83,4 +92,4 @@ payload = {
 with OUT_WEIGHTS_JSON.open("w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
 
-print(f"\n[OK] Weights exported to {OUT_WEIGHTS_JSON}")
+logger.debug("Weights exported to %s", OUT_WEIGHTS_JSON)

@@ -1,4 +1,11 @@
 # src/Shopping_assistant/colors/hard_color_pool.py
+"""
+Hard color candidate pooling.
+
+Selects candidate shades based on strict color-distance thresholds
+and environment-driven parameters prior to scoring.
+"""
+
 from __future__ import annotations
 
 import os

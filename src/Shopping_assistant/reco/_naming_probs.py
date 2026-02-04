@@ -1,4 +1,11 @@
 # src/Shopping_assistant/reco/_naming_probs.py
+"""
+Naming probability utilities.
+
+Attaches and queries per-family naming probabilities on inventory items
+to support domain anchoring, pooling, and within-family constraints.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache

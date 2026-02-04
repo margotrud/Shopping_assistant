@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from Shopping_assistant.reco._colorconv import _hex_to_lab
 
 # -----------------------------
 # Paths
@@ -62,15 +63,6 @@ def _xyz_to_lab(X: float, Y: float, Z: float) -> Tuple[float, float, float]:
     a = 500 * (fx - fy)
     b = 200 * (fy - fz)
     return float(L), float(a), float(b)
-
-
-def _hex_to_lab(h: str) -> Optional[Tuple[float, float, float]]:
-    rgb = _hex_to_rgb01(h)
-    if rgb is None:
-        return None
-    X, Y, Z = _rgb01_to_xyz(*rgb)
-    return _xyz_to_lab(X, Y, Z)
-
 
 def _lab_C(lab: Tuple[float, float, float]) -> float:
     _, a, b = lab

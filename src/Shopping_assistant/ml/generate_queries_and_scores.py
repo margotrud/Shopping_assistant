@@ -1,4 +1,11 @@
 # src/Shopping_assistant/ml/generate_queries_and_scores.py
+"""
+Synthetic query and score generation.
+
+Generates text queries and corresponding color scores
+to support model training, evaluation, and analysis.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +19,8 @@ import pandas as pd
 # Reuse your scoring module (dynamic constraints)
 from Shopping_assistant.color.scoring import Constraint, QuerySpec, score_shades
 
+import logging
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
 # Paths
@@ -281,10 +290,8 @@ def main() -> None:
     )
 
     # minimal stdout summary
-    print(f"written_files={len(written)}")
-    if written:
-        print(str(written[0]))
-        print(str(written[-1]))
+    logger.debug("written_files=%d", len(written))
+    logger.debug("%s", written[0])
 
 
 if __name__ == "__main__":

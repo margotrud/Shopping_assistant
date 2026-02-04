@@ -1,4 +1,11 @@
 # src/Shopping_assistant/ml/train_ranker.py
+"""
+Ranking model training.
+
+Trains and exports learning-to-rank models used to score
+candidate shades based on features and preferences.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -20,6 +27,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import HistGradientBoostingClassifier
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
@@ -213,9 +222,7 @@ def main() -> None:
     preds_path = reports_dir / f"{model_name}_test_predictions.csv"
     pred_df.to_csv(preds_path, index=False)
 
-    print(str(model_path))
-    print(str(report_path))
-    print(str(preds_path))
+    logger.debug("%s", model_path)
 
 
 if __name__ == "__main__":

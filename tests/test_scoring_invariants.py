@@ -23,7 +23,8 @@ def _resolve_first_existing(candidates: list[Path]) -> Path:
     for p in candidates:
         if p.exists():
             return p
-    raise FileNotFoundError(f"None of the candidate files exist: {[str(p) for p in candidates]}")
+    import pytest
+    pytest.skip(f"Missing local dataset file(s): {[str(p) for p in candidates]}")
 
 
 def _load_assets_defaults():

@@ -1,4 +1,11 @@
 # src/Shopping_assistant/colors/enrich_dataset.py
+"""
+Dataset enrichment utilities.
+
+Augments product datasets with derived color features,
+normalized representations, and auxiliary metadata.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +17,8 @@ from typing import Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
@@ -342,7 +351,7 @@ def main() -> None:
         drop_rows_missing_rgb=bool(args.drop_missing_rgb),
     )
     outpath = enrich_csv(Path(args.infile), Path(args.outdir), cfg=cfg)
-    print(str(outpath))
+    logger.debug(str(outpath))
 
 
 if __name__ == "__main__":
