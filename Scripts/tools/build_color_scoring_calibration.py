@@ -1,30 +1,44 @@
-# scripts/build_color_scoring_calibration.py
+# scripts/tools/build_color_scoring_calibration.py
+"""
+OFFLINE SCRIPT — NOT RUN IN THIS REPOSITORY
+
+This script rebuilds `data/models/color_scoring_calibration.json`
+from private enriched datasets that are NOT versioned.
+
+It is kept for reproducibility and documentation purposes only.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from Shopping_assistant.color.scoring import (
-    _ALLOWED_DIMS,
-    _default_assignments,
-    _default_enriched,
-    _default_prototypes,
-    _ensure_cluster_id,
-)
-
 
 def _project_root() -> Path:
-    # .../scripts/build_color_scoring_calibration.py -> parents[1] = project root
-    return Path(__file__).resolve().parents[1]
+    # .../scripts/tools/build_color_scoring_calibration.py -> parents[2] = project root
+    return Path(__file__).resolve().parents[2]
 
 
 def _default_outpath() -> Path:
     return _project_root() / "data" / "models" / "color_scoring_calibration.json"
+
+
+def _default_enriched() -> Path:
+    return _project_root() / "data" / "enriched_data" / "Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv"
+
+
+def _default_prototypes() -> Path:
+    return _project_root() / "data" / "enriched_data" / "color_prototypes_kmeans.csv"
+
+
+def _default_assignments() -> Path:
+    return _project_root() / "data" / "enriched_data" / "color_cluster_assignments.csv"
 
 
 def _require_cols(df: pd.DataFrame, cols: Iterable[str], *, name: str) -> None:
@@ -43,6 +57,85 @@ def _iqr_stats(x: pd.Series) -> Tuple[float, float, float]:
     return q25, q75, iqr
 
 
+def _relpath_under_root(p: Path, *, root: Path) -> str:
+    """
+    Repo-portable metadata string:
+    - if p under root: POSIX relative path
+    - else: filename only (avoid leaking local absolute paths)
+    """
+    try:
+        return str(p.resolve().relative_to(root).as_posix())
+    except Exception:
+        return p.name
+
+
+def _allowed_dims_from_df(df: pd.DataFrame) -> list[str]:
+    """
+    Avoid importing internal constants from scoring.py.
+    Infer dims from columns present in df using a conservative allowlist.
+    """
+    candidate_dims = [
+        "brightness",
+        "depth",
+        "saturation",
+        "vibrancy",
+        "chroma",
+        "clarity",
+        "warmth",
+    ]
+    return [d for d in candidate_dims if d in df.columns]
+
+
+def _ensure_cluster_id_local(
+    df: pd.DataFrame,
+    prototypes: pd.DataFrame,
+    assignments: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """
+    Ensure df has 'cluster_id'.
+    Strategy:
+      1) if df already has cluster_id -> ok
+      2) else if assignments provided -> merge on best available key
+      3) else: raise (cannot infer)
+    """
+    if "cluster_id" in df.columns and df["cluster_id"].notna().any():
+        return df
+
+    if assignments is None:
+        raise ValueError(
+            "No 'cluster_id' in enriched df and no assignments provided. "
+            "Provide --assignments with columns including cluster_id + a join key (e.g. shade_id)."
+        )
+
+    if "cluster_id" not in assignments.columns:
+        raise KeyError("assignments missing required column: cluster_id")
+
+    # choose join key among common identifiers
+    join_candidates = ["shade_id", "product_id", "sku", "item_id"]
+    join_key = None
+    for k in join_candidates:
+        if k in df.columns and k in assignments.columns:
+            join_key = k
+            break
+
+    if join_key is None:
+        raise KeyError(
+            f"Cannot merge assignments: no common join key found. "
+            f"Tried {join_candidates}. df_cols={sorted(df.columns)[:20]}..."
+        )
+
+    merged = df.merge(assignments[[join_key, "cluster_id"]], on=join_key, how="left")
+    if "cluster_id" not in merged.columns or merged["cluster_id"].isna().all():
+        raise ValueError(f"Assignments merge failed: cluster_id still missing after join on '{join_key}'")
+
+    # basic sanity: cluster ids should exist in prototypes
+    if "cluster_id" in prototypes.columns:
+        # no hard fail: merge-to-prototypes later will naturally drop bad rows
+        pass
+
+    return merged
+
+
 def build_calibration(
     *,
     enriched_path: Path,
@@ -51,11 +144,26 @@ def build_calibration(
     outpath: Path,
     deltaE_ref_q: float = 0.95,
 ) -> None:
+    # fail fast with an explicit message (repo is lightweight; these files may be absent)
+    if not enriched_path.exists():
+        raise FileNotFoundError(
+            f"Enriched CSV not found: {enriched_path}\n"
+            f"Provide --enriched or set SA_ENRICHED_CSV_PATH."
+        )
+    if not prototypes_path.exists():
+        raise FileNotFoundError(
+            f"Prototypes CSV not found: {prototypes_path}\n"
+            f"Provide --prototypes or set SA_PROTOTYPES_CSV_PATH."
+        )
+
     df = pd.read_csv(enriched_path)
     prototypes = pd.read_csv(prototypes_path)
-    assignments = assignments_path if assignments_path.exists() else None
 
-    df = _ensure_cluster_id(df, prototypes, assignments)
+    assignments_df: Optional[pd.DataFrame] = None
+    if assignments_path and Path(assignments_path).exists():
+        assignments_df = pd.read_csv(assignments_path)
+
+    df = _ensure_cluster_id_local(df, prototypes, assignments_df)
 
     # Needed for deltaE-to-own-prototype distribution
     _require_cols(df, ("cluster_id", "L_lab", "a_lab", "b_lab"), name="enriched df")
@@ -81,17 +189,13 @@ def build_calibration(
     if not np.isfinite(deltaE_ref) or deltaE_ref <= 0:
         raise ValueError(f"Invalid deltaE_ref={deltaE_ref}")
 
-    # Thresholds for constraint levels are FIXED here (no df.quantile at scoring time)
     level_to_q: Dict[str, float] = {"low": 0.35, "medium": 0.50, "high": 0.65, "very_high": 0.80}
 
     thresholds: Dict[str, Dict[str, float]] = {}
     scale_iqr: Dict[str, float] = {}
     scale_std: Dict[str, float] = {}
 
-    for dim in sorted(_ALLOWED_DIMS):
-        if dim not in df.columns:
-            continue
-
+    for dim in _allowed_dims_from_df(df):
         x = df[dim].dropna()
         if x.empty:
             continue
@@ -101,22 +205,22 @@ def build_calibration(
         _, _, iqr = _iqr_stats(x)
         std = float(x.std(ddof=0))
 
-        # Robust defaults
         scale_iqr[dim] = float(iqr) if np.isfinite(iqr) and iqr > 1e-12 else float("nan")
         scale_std[dim] = float(std) if np.isfinite(std) and std > 1e-12 else float("nan")
 
+    root = _project_root().resolve()
     payload = {
         "version": 1,
         "source": {
-            "enriched_path": str(enriched_path),
-            "prototypes_path": str(prototypes_path),
-            "assignments_path": str(assignments_path),
+            "enriched_path": _relpath_under_root(enriched_path, root=root),
+            "prototypes_path": _relpath_under_root(prototypes_path, root=root),
+            "assignments_path": _relpath_under_root(assignments_path, root=root),
         },
         "deltaE_ref_q": float(deltaE_ref_q),
         "deltaE_ref": deltaE_ref,
-        "thresholds": thresholds,           # dim -> level -> threshold
-        "scale_iqr": scale_iqr,             # dim -> iqr
-        "scale_std": scale_std,             # dim -> std
+        "thresholds": thresholds,
+        "scale_iqr": scale_iqr,
+        "scale_std": scale_std,
         "notes": {
             "constraint_thresholds": "Fixed quantiles computed on reference dataset; DO NOT recompute at scoring time.",
             "penalty_normalization": "gap / scale_iqr[dim] (fallback scale_std).",
@@ -131,10 +235,10 @@ def build_calibration(
 
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--enriched", type=str, default=str(_default_enriched()))
-    p.add_argument("--prototypes", type=str, default=str(_default_prototypes()))
-    p.add_argument("--assignments", type=str, default=str(_default_assignments()))
-    p.add_argument("--out", type=str, default=str(_default_outpath()))
+    p.add_argument("--enriched", type=str, default=os.environ.get("SA_ENRICHED_CSV_PATH", str(_default_enriched())))
+    p.add_argument("--prototypes", type=str, default=os.environ.get("SA_PROTOTYPES_CSV_PATH", str(_default_prototypes())))
+    p.add_argument("--assignments", type=str, default=os.environ.get("SA_ASSIGNMENTS_CSV_PATH", str(_default_assignments())))
+    p.add_argument("--out", type=str, default=os.environ.get("SA_CALIBRATION_JSON_PATH", str(_default_outpath())))
     p.add_argument("--deltaE-ref-q", type=float, default=0.95)
     return p
 

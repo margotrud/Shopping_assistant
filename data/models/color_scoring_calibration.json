@@ -1,10 +1,11 @@
 {
   "version": 2,
-  "source": {
-    "enriched_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv",
-    "prototypes_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\color_prototypes_kmeans.csv",
-    "assignments_path": "C:\\Users\\33628\\OneDrive\\Documents\\Projects\\Shopping_Assistant_V8\\pythonProject\\data\\enriched_data\\color_cluster_assignments.csv"
-  },
+"source": {
+  "enriched_path": "data/enriched_data/Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv",
+  "prototypes_path": "data/enriched_data/color_prototypes_kmeans.csv",
+  "assignments_path": "data/enriched_data/color_cluster_assignments.csv"
+},
+
   "deltaE_ref_q": 0.95,
   "deltaE_ref": 14.36466145271401,
 
