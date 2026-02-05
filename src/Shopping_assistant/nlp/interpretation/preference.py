@@ -485,6 +485,10 @@ def interpret_preference_text(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
+    """Does: parse free text into structured preference signals.
+    Runs NLP parsing, mention extraction, polarity, and constraint detection.
+    Returns: intermediate NLP interpretation object.
+    """
     res = interpret_nlp(
         text,
         spacy_model=spacy_model,
@@ -503,6 +507,9 @@ def interpret_preference_text(
 
 
 def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
+    """Does: convert NLPResult into a normalized preference dict.
+    Used by: recommendation and scoring adapters.
+    """
     return resolve_preference(nlp_res)
 
 
@@ -514,6 +521,9 @@ def build_preference_from_text(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
+    """Does: end-to-end helper to build preferences directly from text.
+    Combines interpretation and normalization steps.
+    """
     nlp_res = interpret_nlp(
         text,
         spacy_model=spacy_model,
