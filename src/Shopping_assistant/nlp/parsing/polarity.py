@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 
 
 class PolarityLLM(Protocol):
+    """Does: optional LLM-backed polarity helper for ambiguous clauses/mentions.
+    Provides: a callable interface used by polarity inference when enabled.
+    """
     def __call__(self, clause_text: str, mentions: List[str]) -> Dict[str, Optional[str]]:
         """
         Expected return format:
