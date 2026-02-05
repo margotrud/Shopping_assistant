@@ -29,6 +29,9 @@ def make_clause(
     reason: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Clause:
+    """Does: build a Clause object from parsed text span and metadata.
+    Used by: clause splitting and downstream NLP assembly.
+    """
     return Clause(
         clause_id=clause_id,
         text=text,
@@ -49,6 +52,9 @@ def make_mention(
     confidence: float = 0.0,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Mention:
+    """Does: build a Mention object from token span, kind, and polarity.
+    Used by: lexicon and LLM-based mention extraction.
+    """
     return Mention(
         span=span or Span(0, 0),
         raw=raw or canonical,
@@ -72,6 +78,9 @@ def make_constraint(
     scope: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Constraint:
+    """Does: build a Constraint object from axis, direction, and strength.
+    Used by: constraint normalization and preference resolution.
+    """
     return Constraint(
         axis=axis,
         direction=direction,
@@ -93,6 +102,9 @@ def build_nlp_result(
     diagnostics: Optional[Dict[str, Any]] = None,
     trace: Optional[Dict[str, Any]] = None,
 ) -> NLPResult:
+    """Does: assemble the final NLPResult from clauses, mentions, and constraints.
+    Returns: immutable NLPResult consumed by preference resolution and scoring.
+    """
     return NLPResult(
         text=text,
         clauses=tuple(clauses),
