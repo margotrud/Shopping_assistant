@@ -270,13 +270,13 @@ hero_lines = [
     '<div class="kicker">A NEW WAY TO CHOOSE LIPSTICK.</div>',
     '<div class="h1">Find the shade that feels right.</div>',
     '<div class="home-rule"></div>',
-    '<p class="p">From words to shade — quietly, precisely.</p>',
+    '<p class="p">From words to shades — guided by color science.</p>',
     counts_html,
     cta_html,
     '<div class="home-guide">',
-    '<div class="home-guide-line"><span class="home-guide-step">1</span> <strong>Describe</strong>a shade in natural language.</div>',
-    '<div class="home-guide-line"><span class="home-guide-step">2</span> <strong>Understand</strong>the interpretation and scoring.</div>',
-    '<div class="home-guide-line"><span class="home-guide-step">3</span> <strong>Explore</strong>the colors space and palette.</div>',
+    '<div class="home-guide-line"><span class="home-guide-step">1</span> <strong>Describe</strong> a shade in natural language.</div>',
+    '<div class="home-guide-line"><span class="home-guide-step">2</span> <strong>Interpret</strong> intent and color constraints.</div>',
+    '<div class="home-guide-line"><span class="home-guide-step">3</span> <strong>Match</strong> shades with perceptual precision.</div>',
     "</div>",
     "</div>",
 
@@ -292,23 +292,23 @@ st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 # -----------------------------
 # ENTRY MAP
 # -----------------------------
-st.markdown('<div class="h2">Explore the system</div>', unsafe_allow_html=True)
+st.markdown('<div class="h2">Inside the system</div>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="p">A walkthrough of the system, covering product flow, interpretation, and scoring.</p>',
+    '<p class="p">A high-level overview of how preferences are interpreted and matched.</p>',
     unsafe_allow_html=True,
 )
 
 entry_lines = [
     '<div class="entry-grid">',
-    _chip("Playground", "Type a preference. Get ranked shades.", PLAYGROUND, "Start"),
-    _chip("Shade Lab", "Explore shades across depth, brightness, and tone.", SHADE_LAB, "Explore"),
-    _chip("Model Card", "Model assumptions, limitations, and design choices.", MODEL_CARD, "Read"),
+    _chip("Playground", "Enter a natural language preference. Get ranked shades.", PLAYGROUND, "Start"),
+    _chip("Shade Lab", "Visual inspection of the color space used by the engine.", SHADE_LAB, "Explore"),
+    _chip("Model Card", "System guarantees, assumptions, limitations, and known failure modes.", MODEL_CARD, "Read"),
     "</div>",
 ]
 st.markdown("\n".join(entry_lines), unsafe_allow_html=True)
 
 st.markdown(
-    '<p class="small-note">This page remains intentionally non-technical. Deeper rationale is available in Explain and the Model Card.</p>',
+    '<p class="small-note">This page is intentionally non-technical. Detailed system behavior is documented in the Model Card.</p>',
     unsafe_allow_html=True,
 )
 
