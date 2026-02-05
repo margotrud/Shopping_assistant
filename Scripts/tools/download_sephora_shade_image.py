@@ -1,31 +1,90 @@
 # Scripts/tools/download_sephora_shade_image.py
 from __future__ import annotations
 
+import argparse
 import csv
+import os
 import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
 # =========================
-# CONFIG (RUN-ONLY)
+# CLI / CONFIG
 # =========================
-CSV_PATH = Path(
-    r"C:\Users\33628\OneDrive\Documents\Projects\Shopping_Assistant_V8\pythonProject\data\Sephora_lipsticks_raw_items_with_chip_rgb.csv"
-)
-OUT_DIR = Path("data/_product_image_cache")
 
-IMAGE_SIZE = 900
-PREFER = "swatch"  # "swatch" or "zoom"
-OVERWRITE = False
-TIMEOUT = 20
-RETRIES = 2
-SLEEP_BETWEEN = 0.20
+DEFAULT_CSV = Path(
+    os.environ.get(
+        "SA_SEPHORA_CSV_PATH",
+        "data/Sephora_lipsticks_raw_items_with_chip_rgb.csv",
+    )
+)
+
+DEFAULT_OUT_DIR = Path(
+    os.environ.get(
+        "SA_IMAGE_CACHE_DIR",
+        "data/_product_image_cache",
+    )
+)
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Download Sephora shade images.")
+    p.add_argument(
+        "--csv-path",
+        type=Path,
+        default=DEFAULT_CSV,
+        help="Path to Sephora CSV (default: env SA_SEPHORA_CSV_PATH or data/...csv).",
+    )
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help="Output directory for downloaded images (default: env SA_IMAGE_CACHE_DIR or data/_product_image_cache).",
+    )
+    p.add_argument(
+        "--image-size",
+        type=int,
+        default=int(os.environ.get("SA_IMAGE_SIZE", "900")),
+        help="Square size (px) for requested images (default: env SA_IMAGE_SIZE or 900).",
+    )
+    p.add_argument(
+        "--prefer",
+        type=str,
+        choices=["swatch", "zoom"],
+        default=os.environ.get("SA_IMAGE_PREFER", "swatch"),
+        help="Prefer swatch or zoom URLs (default: env SA_IMAGE_PREFER or swatch).",
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files (default: False).",
+    )
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=int(os.environ.get("SA_IMAGE_TIMEOUT", "20")),
+        help="Request timeout in seconds (default: env SA_IMAGE_TIMEOUT or 20).",
+    )
+    p.add_argument(
+        "--retries",
+        type=int,
+        default=int(os.environ.get("SA_IMAGE_RETRIES", "2")),
+        help="Retries per candidate URL (default: env SA_IMAGE_RETRIES or 2).",
+    )
+    p.add_argument(
+        "--sleep",
+        type=float,
+        default=float(os.environ.get("SA_IMAGE_SLEEP", "0.20")),
+        help="Sleep between rows (seconds) (default: env SA_IMAGE_SLEEP or 0.20).",
+    )
+    return p.parse_args()
+
 
 # Accept .jpg and .jpeg thumbnails
 _THUMB_RE = re.compile(r"-media_thumbnail\.(?P<ext>jpe?g)$", flags=re.IGNORECASE)
@@ -96,7 +155,7 @@ def _build_center_image_url_candidates_from_chip_url(
     Returns candidates ordered by:
       1) prefer swatch/zoom
       2) other (zoom/swatch)
-      3) extension attempts: jpg then jpeg (and also keep original thumb ext first)
+      3) extension attempts: original thumb ext first, then the other
     """
     if prefer not in {"swatch", "zoom"}:
         raise ValueError("prefer must be 'swatch' or 'zoom'")
@@ -117,7 +176,6 @@ def _build_center_image_url_candidates_from_chip_url(
 
     # Extension order: try original ext first, then the other
     ext_order = [thumb_ext, "jpeg" if thumb_ext == "jpg" else "jpg"]
-    # Dedup in case thumb_ext already equals other
     ext_order = list(dict.fromkeys(ext_order))
 
     q = dict(parse_qsl(parts.query, keep_blank_values=True))
@@ -202,7 +260,9 @@ def _download_one(
 
     try:
         candidates = _build_center_image_url_candidates_from_chip_url(
-            row.chip_url, size=size, prefer=prefer
+            row.chip_url,
+            size=size,
+            prefer=prefer,
         )
     except Exception as e:
         return None, "", f"{type(e).__name__}: {e}"
@@ -228,16 +288,26 @@ def _download_one(
     return None, candidates[0] if candidates else "", last_err
 
 
-def run() -> Path:
-    if not CSV_PATH.exists():
-        raise FileNotFoundError(f"CSV not found: {CSV_PATH}")
+def run(
+    *,
+    csv_path: Path,
+    out_dir: Path,
+    image_size: int,
+    prefer: str,
+    overwrite: bool,
+    timeout: int,
+    retries: int,
+    sleep_between: float,
+) -> Path:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
 
-    out_dir = _ensure_dir(OUT_DIR)
+    out_dir = _ensure_dir(out_dir)
     index_csv_path = out_dir / "images_index.csv"
 
     s = _build_session()
 
-    with CSV_PATH.open("r", encoding="utf-8", newline="") as f_in, index_csv_path.open(
+    with csv_path.open("r", encoding="utf-8", newline="") as f_in, index_csv_path.open(
         "w", encoding="utf-8", newline=""
     ) as f_idx:
         reader = csv.DictReader(f_in)
@@ -301,11 +371,11 @@ def run() -> Path:
                 s,
                 row,
                 out_dir,
-                size=IMAGE_SIZE,
-                prefer=PREFER,
-                overwrite=OVERWRITE,
-                timeout=TIMEOUT,
-                retries=RETRIES,
+                size=image_size,
+                prefer=prefer,
+                overwrite=overwrite,
+                timeout=timeout,
+                retries=retries,
             )
 
             if image_path is not None:
@@ -345,8 +415,8 @@ def run() -> Path:
                 )
                 print(f"[err] {row.product_id} {row.shade_id} -> {error_msg}", file=sys.stderr)
 
-            if SLEEP_BETWEEN > 0:
-                time.sleep(SLEEP_BETWEEN)
+            if sleep_between > 0:
+                time.sleep(float(sleep_between))
 
     print(f"[done] ok={ok_n} error={err_n}")
     print(f"[done] images_dir: {out_dir.resolve().as_posix()}")
@@ -354,5 +424,20 @@ def run() -> Path:
     return index_csv_path
 
 
+def main() -> int:
+    args = _parse_args()
+    run(
+        csv_path=args.csv_path,
+        out_dir=args.out_dir,
+        image_size=int(args.image_size),
+        prefer=str(args.prefer),
+        overwrite=bool(args.overwrite),
+        timeout=int(args.timeout),
+        retries=int(args.retries),
+        sleep_between=float(args.sleep),
+    )
+    return 0
+
+
 if __name__ == "__main__":
-    run()
+    raise SystemExit(main())
