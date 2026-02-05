@@ -94,6 +94,13 @@ def _rgb_cols_to_hex(df: pd.DataFrame) -> pd.Series:
 
 
 def load_scoring_calibration(path: str | Path) -> dict:
+    """
+    Load and validate scoring calibration parameters.
+    Args: path to calibration JSON.
+    Returns: calibration dict (deltaE ref, thresholds, scales).
+    Raises: FileNotFoundError, KeyError, ValueError.
+    """
+
     cal_path = Path(path)
     if not cal_path.exists():
         raise FileNotFoundError(f"Missing scoring calibration file: {cal_path}")
@@ -109,6 +116,12 @@ def load_scoring_calibration(path: str | Path) -> dict:
 
 
 def load_preference_weights(path: str | Path) -> Optional[dict[str, float]]:
+    """
+    Load optional preference weights.
+    Args: path to preference weights JSON.
+    Returns: weight dict or None if missing/invalid.
+    """
+
     p = Path(path)
     if not p.exists():
         return None
@@ -777,6 +790,13 @@ def score_shades(
     constraint_p_hi: float = 0.75,
     constraint_floor: float = 0.35,
 ) -> pd.DataFrame:
+    """
+    Score and rank candidate shades for a query.
+    Combines deltaE, constraints, preferences, and family factors.
+    Args: inventory df, prototypes or QuerySpec, calibration.
+    Returns: ranked DataFrame with scores and diagnostics.
+    """
+
     # --- API COMPAT ---
     # Accept:
     #   score_shades(df, query, ...)
