@@ -68,23 +68,17 @@ logger = logging.getLogger(__name__)
 # Local helpers
 # -----------------------------------------------------------------------------
 def _adaptive_hue_band_deg(anchor_C: float) -> float:
-    """
-    Low-chroma anchors (e.g. nude) must stay tightly hue-bounded to prevent drift.
-    High-chroma anchors can use a wider band.
+    """Does: compute hue band width (deg) from anchor chroma (low-C tight, high-C wider).
+    Inputs: anchor_C (chroma in Lab).
+    Returns: band width in degrees, clipped to [18, 36].
     """
     return float(np.clip(18.0 + 0.20 * float(anchor_C), 18.0, 36.0))
 
 
 def _wants_hi_chroma(nlp_res) -> bool:
-    """
-    Opt-in trigger for chroma-focused domain anchor.
-
-    Uses constraint axis+direction; when ambiguous and model chooses brightness,
-    detects near-ties with vibrancy/saturation using axis_debug.
-
-    IMPORTANT OVERRIDE:
-      If user explicitly requests "darker"/"less bright" (depth/brightness lower),
-      we do NOT apply a high-chroma anchor quantile (let scoring handle it).
+    """Does: decide whether to use a high-chroma domain anchor based on NLP constraints.
+    Inputs: nlp_res with constraints (+ optional axis_debug for near-ties).
+    Returns: True iff intent is chroma-focused AND not an explicit "darker/less bright" request.
     """
     cons = tuple(getattr(nlp_res, "constraints", ()) or ())
     if not cons:
@@ -178,13 +172,9 @@ def _wants_hi_chroma(nlp_res) -> bool:
 # ANCHOR-ONLY API (no scoring, no inventory)
 # =============================================================================
 def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
-    """
-    Anchor-only resolution for "plain colors" debugging.
-    Returns a dict with anchor_hex, anchor_lab, and minimal NLP context.
-
-    NOTE:
-      - Uses SA_ANCHOR_SOURCE ('lexicon' default) to prevent polluted anchors.
-      - Does NOT score / does NOT touch inventory.
+    """Does: resolve lexicon anchor from text without scoring/inventory (debug helper).
+    Inputs: free-text query.
+    Returns: dict with anchor_hex, anchor_lab, and minimal NLP context.
     """
     nlp_res = interpret_nlp(text, debug=debug)
     has_color = _has_color_like_mention(nlp_res)
@@ -221,15 +211,10 @@ def resolve_effective_anchor_from_text(
     assets: AssetBundle | None = None,
     debug: bool = False,
 ) -> dict:
+    """Does: resolve lexicon anchor + effective anchor actually used by recommend_from_text.
+    Inputs: free-text query (+ optional assets).
+    Returns: dict with lexicon/effective Lab, anchor hex, family label, and derivation flags.
     """
-    Resolve the effective color anchor for a free-text query (no scoring).
-
-    Does: parse NLP output and return both the lexicon anchor and the effective anchor
-    actually used by recommend_from_text (including domain / hi-chroma adjustments).
-    Returns: dict with anchor_lab_effective, anchor_lab_lexicon, anchor_hex, family info,
-    and flags describing how the anchor was derived.
-    """
-
     if assets is None:
         assets = load_default_assets()
 
@@ -322,13 +307,10 @@ def recommend_from_text(
     lambda_preference: float = 0.0,
     debug: bool = False,
 ) -> pd.DataFrame:
+    """Does: parse NLP, build candidate pool, score shades, and return ranked top-K.
+    Inputs: query text + assets/pool/scoring params.
+    Returns: DataFrame sorted by score, incl. scoring cols (+ deltaE_norm when anchor is used).
     """
-    Score and return top-K lipstick shades for a free-text preference query.
-
-    Does: parse NLP constraints + anchor, build a candidate pool, then score shades and return a ranked DataFrame.
-    Returns: pandas DataFrame sorted by score (topk rows), including scoring columns (and deltaE_norm when anchor is used).
-    """
-
     if assets is None:
         assets = load_default_assets()
 
