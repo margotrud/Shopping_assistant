@@ -26,12 +26,18 @@ log = logging.getLogger(__name__)
 
 
 class AxisClassifier(Protocol):
+    """Does: classify user intent along a semantic axis from text embeddings.
+    Used by: axis prediction and preference interpretation pipeline.
+    """
     def __call__(self, label: str, *, context: str = "") -> "AxisPred":
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class AxisPred:
+    """Does: hold axis prediction scores and metadata for a single input.
+    Used by: downstream axis resolution and thresholding.
+    """
     label: str
     axis: Optional[Axis]
     confidence: float
