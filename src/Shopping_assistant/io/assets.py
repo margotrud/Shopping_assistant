@@ -17,6 +17,10 @@ from Shopping_assistant.io.data_schema import (
 
 @dataclass(frozen=True)
 class AssetBundle:
+    """Does: container for runtime assets used by NLP + scoring + recommender.
+    Contains: inventory DataFrame, lexicon/anchors, calibration dict, optional preference weights.
+    Used by: recommend_from_text() and related debug helpers.
+    """
     inventory: pd.DataFrame
     calibration: dict
 
@@ -26,6 +30,10 @@ def load_assets(
     enriched_csv: Path,
     calibration_json: Path,
 ) -> AssetBundle:
+    """Does: load runtime assets (inventory + JSON configs) from a root directory.
+    Inputs: paths for inventory/enriched CSV and model JSONs; validates schema where relevant.
+    Returns: AssetBundle ready to be passed into recommend_from_text().
+    """
     inventory = pd.read_csv(enriched_csv)
     calibration = json.loads(calibration_json.read_text(encoding="utf-8"))
 
