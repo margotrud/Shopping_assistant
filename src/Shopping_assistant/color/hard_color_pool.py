@@ -19,6 +19,9 @@ from Shopping_assistant.color.deltae import delta_e_ciede2000
 
 @dataclass(frozen=True, slots=True)
 class HardColorPoolParams:
+    """Does: parameter container for hard color pool selection.
+    Controls ΔE thresholds, neutral handling, and pool size limits.
+    """
     # ΔE00 thresholds
     de00_max: float = 18.0
     de00_max_neutral: float = 12.0

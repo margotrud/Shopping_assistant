@@ -15,6 +15,9 @@ Direction = Literal["above", "below", "near", "toward"]
 
 @dataclass(frozen=True)
 class LabelDistributions:
+    """Does: hold empirical label distributions used for family-based constraints.
+    Used by: naming-probability scoring and family-aware constraint application.
+    """
     n: int
     p_threshold: float
     L: Mapping[str, float]
@@ -26,6 +29,9 @@ class LabelDistributions:
 
 @dataclass(frozen=True)
 class ConstraintSpec:
+    """Does: represent a normalized constraint applied during scoring.
+    Encodes axis, direction, quantile bounds, and strength.
+    """
     axis: Axis
     direction: Direction
     strength: float = 1.0
