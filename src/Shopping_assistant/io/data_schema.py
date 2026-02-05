@@ -8,6 +8,9 @@ import pandas as pd
 
 
 class DataSchemaError(ValueError):
+    """Does: raised when a runtime data asset does not match the expected schema.
+    Used by: inventory and calibration validators.
+    """
     pass
 
 
@@ -18,6 +21,9 @@ def _require_columns(df: pd.DataFrame, cols: Iterable[str], *, name: str) -> Non
 
 
 def validate_inventory(df: pd.DataFrame) -> None:
+    """Does: validate inventory DataFrame schema and required columns.
+    Raises: DataSchemaError if required fields or dtypes are missing/invalid.
+    """
     _require_columns(
         df,
         ["shade_id", "product_id", "L_lab", "a_lab", "b_lab"],
@@ -26,6 +32,9 @@ def validate_inventory(df: pd.DataFrame) -> None:
 
 
 def validate_calibration(cal: dict) -> None:
+    """Does: validate scoring calibration JSON structure and numeric ranges.
+    Raises: DataSchemaError on missing keys or invalid values.
+    """
     # Must match what scoring.py uses (cluster-free).
     required = ["deltaE_ref", "thresholds", "scale_iqr", "scale_std"]
     missing = [k for k in required if k not in cal]
