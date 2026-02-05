@@ -220,12 +220,19 @@ def _parse_chip_rgb_series(chip_rgb: pd.Series) -> Tuple[pd.Series, pd.Series, p
 
 @dataclass(frozen=True)
 class EnrichConfig:
+    """Does: configuration for dataset color enrichment.
+    Controls: color space conversion, feature computation, and output columns.
+    """
     rgb_col: str = "chip_rgb"
     drop_rows_missing_rgb: bool = False
     out_suffix: str = "_enriched"
 
 
 def enrich_dataframe(df: pd.DataFrame, *, cfg: EnrichConfig = EnrichConfig()) -> pd.DataFrame:
+    """Does: enrich a DataFrame with color features (Lab, chroma, hue, etc.).
+    Inputs: raw inventory DataFrame and enrichment config.
+    Returns: enriched DataFrame with additional color-derived columns.
+    """
     if cfg.rgb_col not in df.columns:
         raise KeyError(f"Missing required column '{cfg.rgb_col}'")
 
@@ -298,6 +305,10 @@ def enrich_dataframe(df: pd.DataFrame, *, cfg: EnrichConfig = EnrichConfig()) ->
 
 
 def enrich_csv(infile: Path, outdir: Path, *, cfg: EnrichConfig = EnrichConfig()) -> Path:
+    """Does: load a CSV, enrich it with color features, and write outputs.
+    Inputs: input CSV path, output directory, and enrichment config.
+    Returns: path to the written enriched CSV.
+    """
     infile = infile.resolve()
     outdir = outdir.resolve()
     outdir.mkdir(parents=True, exist_ok=True)

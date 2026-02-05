@@ -9,6 +9,10 @@ def delta_e_ciede2000(
     L1: np.ndarray, a1: np.ndarray, b1: np.ndarray,
     L2: float, a2: float, b2: float,
 ) -> np.ndarray:
+    """Does: compute CIEDE2000 color difference between two Lab colors.
+    Inputs: Lab color pairs (L*, a*, b*).
+    Returns: perceptual color distance (ΔE00).
+    """
     L1 = np.asarray(L1, dtype=float)
     a1 = np.asarray(a1, dtype=float)
     b1 = np.asarray(b1, dtype=float)
