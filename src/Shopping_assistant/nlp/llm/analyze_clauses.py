@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 class LikeItem(TypedDict, total=False):
+    """Does: represent a positively liked item inferred by the LLM."""
+
     family: str
     hue_deg: float
     alias: str
@@ -39,6 +41,8 @@ class LikeItem(TypedDict, total=False):
 
 
 class DislikeItem(TypedDict, total=False):
+    """Does: represent a negatively disliked item inferred by the LLM."""
+
     family: str
     hue_deg: float
     alias: str
@@ -46,6 +50,8 @@ class DislikeItem(TypedDict, total=False):
 
 
 class StyleIntent(TypedDict, total=False):
+    """Does: represent a stylistic preference inferred from free text."""
+
     label: str
     strength: float
     polarity: str
@@ -53,6 +59,8 @@ class StyleIntent(TypedDict, total=False):
 
 
 class Mention(TypedDict, total=False):
+    """Does: represent a raw mention extracted by the LLM with minimal structure."""
+
     alias: str
     name: str
     hex: str
@@ -461,6 +469,9 @@ def extract_mentions_free(
     color_index: Dict[str, Dict[str, Any]],
     doc: Optional[Any] = None,
 ) -> List[Mention]:
+    """Does: extract free-form mentions using an LLM prompt.
+    Returns: list of mention-like dicts or objects for downstream parsing.
+    """
     if not doc_text:
         return []
 
@@ -1082,6 +1093,9 @@ def analyze_clauses_with_llm(
     expose_styles: bool = True,
     debug_mentions: bool = False,
 ) -> Dict[str, Any]:
+    """Does: analyze clauses with an LLM to extract mentions and intents.
+    Used when rule-based parsing is insufficient or ambiguous.
+    """
     if llm_polarity_fn is None:
         raise RuntimeError("analyze_clauses_with_llm requires llm_polarity_fn.")
 
