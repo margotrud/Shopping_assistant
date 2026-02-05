@@ -154,6 +154,10 @@ _ALLOWED_OPS = {"<=", ">="}
 
 @dataclass(frozen=True)
 class Constraint:
+    """Does: represent an extracted user constraint mapped to a scoring axis.
+    Fields: axis, direction, strength, evidence, and optional meta/debug payload.
+    Used by: QuerySpec constraints and score_shades()/score_inventory().
+    """
     dim: str
     op: str
     level: str | None = None  # low|medium|high|very_high
