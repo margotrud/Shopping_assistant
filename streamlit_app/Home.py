@@ -38,8 +38,6 @@ has_counts = all(v is not None for v in counts.values())
 # Routes
 # -----------------------------
 PLAYGROUND = "pages/1_Playground.py"
-EXPLAIN_TEXT = "pages/2_Explain_Text.py"
-EXPLAIN_COLORS = "pages/3_Explain_Colors.py"
 SHADE_LAB = "pages/4_Shade_Lab.py"
 MODEL_CARD = "pages/5_Model_Card.py"
 
@@ -303,8 +301,6 @@ st.markdown(
 entry_lines = [
     '<div class="entry-grid">',
     _chip("Playground", "Type a preference. Get ranked shades.", PLAYGROUND, "Start"),
-    _chip("Explain (Text)", "Understand how words are interpreted into makeup intent.", EXPLAIN_TEXT, "Open"),
-    _chip("Explain (Colors)", "Explore how intent becomes constraints in colors space.", EXPLAIN_COLORS, "Open"),
     _chip("Shade Lab", "Explore shades across depth, brightness, and tone.", SHADE_LAB, "Explore"),
     _chip("Model Card", "Model assumptions, limitations, and design choices.", MODEL_CARD, "Read"),
     "</div>",

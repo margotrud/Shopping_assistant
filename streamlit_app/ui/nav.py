@@ -4,17 +4,14 @@ import streamlit as st
 
 
 # Streamlit multipage routes come from filenames in /pages.
-# Examples:
-#   pages/2_Explain_Text.py   -> /Explain_Text
-#   pages/3_Explain_Colors.py -> /Explain_Colors
+
 _ROUTES = [
     ("Home", "/"),
     ("Playground", "/Playground"),
-    ("Explain (Text)", "/Explain_Text"),
-    ("Explain (Colors)", "/Explain_Colors"),
     ("Shade Lab", "/Shade_Lab"),
     ("Model Card", "/Model_Card"),
 ]
+
 
 
 def top_nav(active: str) -> None:
