@@ -78,6 +78,9 @@ def naive_score(query: Dict[str, str], row: pd.Series) -> float:
 # ------------------------------------------------------------------
 
 def build_dataset() -> pd.DataFrame:
+    """Does: build a pairwise preference dataset for training from scored examples.
+    Returns: DataFrame suitable for downstream ranker training.
+    """
     inventory = pd.read_csv(INVENTORY_CSV)
 
     rows: List[Dict] = []

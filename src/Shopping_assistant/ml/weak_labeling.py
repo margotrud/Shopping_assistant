@@ -40,6 +40,9 @@ def _default_outdir() -> Path:
 
 @dataclass(frozen=True)
 class WeakLabelConfig:
+    """Does: configuration for weak-label generation and feature attachment.
+    Controls: labeling heuristics, feature columns, and split parameters.
+    """
     top_q: float = 0.15      # top 15% -> positive
     bottom_q: float = 0.15   # bottom 15% -> negative
     seed: int = 7
@@ -147,6 +150,9 @@ def attach_features(
     *,
     cfg: WeakLabelConfig,
 ) -> pd.DataFrame:
+    """Does: attach model/scoring-derived features to the weak-labeled dataset.
+    Returns: DataFrame with added feature columns.
+    """
     _need = {"product_id", "shade_id"}
     if not _need.issubset(enriched.columns):
         raise KeyError(f"Enriched CSV missing keys: {sorted(_need - set(enriched.columns))}")
@@ -173,6 +179,9 @@ def attach_features(
 
 
 def split_and_save(df: pd.DataFrame, outdir: Path, *, cfg: WeakLabelConfig) -> None:
+    """Does: split a dataset into train/val/test and write to disk.
+    Inputs: DataFrame, output directory, and split config.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Stratify by label; keep query_id mixed (baseline)

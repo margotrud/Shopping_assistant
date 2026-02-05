@@ -82,6 +82,8 @@ def _default_scores_dir() -> Path:
 
 @dataclass(frozen=True)
 class Template:
+    """Does: represent a query template used to synthesize preference text."""
+
     name: str
     constraints: Tuple[Constraint, ...]
 
@@ -214,6 +216,9 @@ def generate_scores(
     overwrite: bool,
     top_n_save: Optional[int],
 ) -> List[Path]:
+    """Does: generate synthetic queries and compute scores against inventory.
+    Returns: DataFrame of generated queries with associated score targets.
+    """
     scores_dir.mkdir(parents=True, exist_ok=True)
 
     written: List[Path] = []

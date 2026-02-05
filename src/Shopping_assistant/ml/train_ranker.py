@@ -69,6 +69,9 @@ def _reports_dir() -> Path:
 
 @dataclass(frozen=True)
 class TrainConfig:
+    """Does: training configuration for the ranking model pipeline.
+    Contains: feature settings, model hyperparams, and IO paths.
+    """
     feature_cols: Tuple[str, ...] = (
         "L_lab",
         "a_lab",
@@ -120,6 +123,9 @@ def _eval_binary(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5)
 # ---------------------------------------------------------------------
 
 def build_logreg(cfg: TrainConfig) -> Pipeline:
+    """Does: build a calibrated logistic regression ranking pipeline.
+    Returns: sklearn Pipeline configured from TrainConfig.
+    """
     # Strong baseline, interpretable coefficients
     return Pipeline(
         steps=[
@@ -135,6 +141,9 @@ def build_logreg(cfg: TrainConfig) -> Pipeline:
 
 
 def build_hgb(cfg: TrainConfig) -> HistGradientBoostingClassifier:
+    """Does: build a histogram gradient boosting model from TrainConfig.
+    Returns: configured sklearn estimator for ranking classification.
+    """
     # Robust non-linear baseline (handles interactions)
     return HistGradientBoostingClassifier(
         learning_rate=0.06,
