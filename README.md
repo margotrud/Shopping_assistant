@@ -12,8 +12,9 @@ JSON assets are versioned.
 ## Installation
 
 ```bash
-git clone <REPO_URL>
-cd <REPO_ROOT>
+git clone https://github.com/margotrud/Shopping_assistant.git
+cd pythonProject
+
 pip install -e .
 ```
 ### Optional dependencies
