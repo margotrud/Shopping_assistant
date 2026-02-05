@@ -40,6 +40,13 @@ class ConstraintSpec:
 
 
 def load_label_distributions(path: Path) -> Dict[str, LabelDistributions]:
+    """
+    Load per-label empirical distributions for within-family constraints.
+    Args: path to label distribution JSON.
+    Returns: dict of label -> distribution statistics.
+    Raises: FileNotFoundError or ValueError on invalid data.
+    """
+
     raw = json.loads(path.read_text(encoding="utf-8"))
     out: Dict[str, LabelDistributions] = {}
 
@@ -166,6 +173,13 @@ def constraint_factor(
     p_hi: float = 0.75,
     floor: float = 0.55,
 ) -> pd.Series:
+    """
+    Compute multiplicative score factor from within-family constraints.
+    Uses label probabilities and geometric constraints in Lab space.
+    Args: df with Lab + p_label, constraint specs, distributions.
+    Returns: float array of per-row multiplicative factors.
+    """
+
     if label not in dists:
         raise KeyError(f"label '{label}' missing from distributions")
 
