@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional, Tuple
 # Enums
 # ---------------------------------------------------------------------
 
-class MentionKind(str, Enum):
+class MentionKind(Enum):
+    """Does: classify mention semantic role (color, style, product, etc.)."""
     COLOR = "colors"
     PRODUCT = "product"
     BRAND = "brand"
@@ -18,14 +19,16 @@ class MentionKind(str, Enum):
     OTHER = "other"
 
 
-class Polarity(str, Enum):
+class Polarity(Enum):
+    """Does: represent user sentiment polarity toward a mention or clause."""
     LIKE = "like"
     DISLIKE = "dislike"
     NEUTRAL = "neutral"
     UNKNOWN = "unknown"
 
 
-class Axis(str, Enum):
+class Axis(Enum):
+    """Does: represent a scoring axis (brightness, depth, saturation, etc.)."""
     BRIGHTNESS = "brightness"
     SATURATION = "saturation"
     VIBRANCY = "vibrancy"
@@ -33,12 +36,15 @@ class Axis(str, Enum):
     CLARITY = "clarity"
 
 
-class Direction(str, Enum):
+class Direction(Enum):
+    """Does: represent directional intent on an axis (raise, lower, neutral)."""
     RAISE = "raise"
     LOWER = "lower"
 
 
-class Strength(str, Enum):
+
+class Strength(Enum):
+    """Does: represent constraint strength or confidence level."""
     WEAK = "weak"
     MED = "med"
     STRONG = "strong"
