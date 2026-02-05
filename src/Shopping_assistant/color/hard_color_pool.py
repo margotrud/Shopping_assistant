@@ -37,6 +37,13 @@ class HardColorPoolParams:
 
 
 def params_from_env() -> HardColorPoolParams:
+    """
+    Load hard-pool parameters from environment variables.
+    Args: none (reads SA_* env vars).
+    Returns: dict of resolved hard-pool parameters.
+    Raises: ValueError on invalid env configuration.
+    """
+
     def _f(name: str, default: float) -> float:
         try:
             return float(os.environ.get(name, default))
@@ -62,12 +69,12 @@ def hard_color_pool(
     params: HardColorPoolParams | None = None,
 ) -> pd.DataFrame:
     """
-    Phase A (STRICT):
-      - Compute ΔE00(anchor, item) as _de00_anchor
-      - Keep ONLY items with _de00_anchor <= threshold (no backfill, ever)
-      - For neutral-ish anchors (low chroma), apply extra Lab box guards
-      - Return sorted by _de00_anchor ascending
+    Build a constrained candidate pool around a color anchor.
+    Filters inventory using distance and domain-specific limits.
+    Args: inventory df, anchor/prototypes, pool parameters.
+    Returns: reduced DataFrame of candidate shades.
     """
+
     if inv is None or inv.empty:
         return inv.iloc[0:0].copy()
     if anchor_lab is None:
