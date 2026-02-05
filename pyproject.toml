@@ -6,7 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "Shopping_assistant"
 version = "0.1.0"
 description = "Shopping Assistant"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Margot" }]
 requires-python = ">=3.9"
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
   "numpy>=1.24",
