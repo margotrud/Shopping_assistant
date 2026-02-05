@@ -37,9 +37,10 @@ has_counts = all(v is not None for v in counts.values())
 # -----------------------------
 # Routes
 # -----------------------------
-PLAYGROUND = "pages/1_Playground.py"
-SHADE_LAB = "pages/4_Shade_Lab.py"
-MODEL_CARD = "pages/5_Model_Card.py"
+PLAYGROUND = "Playground"
+SHADE_LAB = "Shade_Lab"
+MODEL_CARD = "Model_Card"
+
 
 # -----------------------------
 # Assets
@@ -200,9 +201,10 @@ section.hero{
 /* CTA */
 a.btn.primary{
   background: var(--accent) !important;
-  colors: #fff !important;
-  border-colors: transparent !important;
+  color: #fff !important;
+  border-color: transparent !important;
 }
+
 a.btn.primary:hover{
   box-shadow: 0 10px 24px rgba(122, 46, 46, 0.32) !important;
   transform: translateY(-1px);
@@ -216,14 +218,14 @@ a.btn.primary:hover{
   line-height: 1.6;
 }
 .home-guide-step{
-  border-colors: rgba(122, 46, 46, 0.22) !important;
-  background: rgba(122, 46, 46, 0.05) !important;
+  border-color: rgba(122, 46, 46, 0.22) !important;
 }
 
-.entry-cta{ colors: var(--accent) !important; }
+
+.entry-cta{ color: var(--accent) !important; }
 
 .entry-grid a.entry-card:first-child{
-  border-colors: rgba(122, 46, 46, 0.55) !important;
+  border-color: rgba(122, 46, 46, 0.55) !important;
   background: linear-gradient(180deg, rgba(122, 46, 46, 0.10), rgba(255,255,255,0.85)) !important;
 }
 
@@ -301,7 +303,7 @@ st.markdown(
 entry_lines = [
     '<div class="entry-grid">',
     _chip("Playground", "Enter a natural language preference. Get ranked shades.", PLAYGROUND, "Start"),
-    _chip("Shade Lab", "Visual inspection of the color space used by the engine.", SHADE_LAB, "Explore"),
+    _chip("Shade Lab", "Visual inspection of the color space used by the engine.", SHADE_LAB, "Inspect →"),
     _chip("Model Card", "System guarantees, assumptions, limitations, and known failure modes.", MODEL_CARD, "Read"),
     "</div>",
 ]
@@ -354,12 +356,12 @@ st.markdown(
   border-radius: 18px;
   padding: 16px 16px 14px 16px;
   display: block;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, border-colors 0.12s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
 }
 .entry-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 28px rgba(19, 42, 99, 0.10);
-  border-colors: rgba(19, 42, 99, 0.22);
+  border-color: rgba(19, 42, 99, 0.22);
 }
 .entry-title { colors: var(--ink); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
 .entry-body { colors: var(--muted); font-size: 14px; line-height: 1.50; margin-bottom: 10px; }
