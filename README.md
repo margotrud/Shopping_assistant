@@ -1,101 +1,67 @@
-# Shopping Assistant — Text-to-Shade Recommendation
+# Shopping Assistant — Color-Aware Recommendation from Natural Language
 
-A portfolio project showcasing an end-to-end **NLP → color science → recommendation** pipeline.
-The system parses free-text preferences (e.g. *"soft nude pink"*), resolves color anchors,
-applies constraint-aware scoring, and returns ranked cosmetic shades.
+This project is a research-grade, end-to-end recommendation system that converts free-text user
+preferences into ranked cosmetic shades using NLP, color science, and calibrated scoring.
+It is designed as a reproducible portfolio project, not a production service.
 
-This repository is intentionally **lightweight and reproducible**: only code and small runtime
-JSON assets are versioned.
+The system parses natural language constraints (e.g. brightness, saturation, exclusions),
+resolves color anchors in Lab space, builds adaptive candidate pools, and ranks products
+with deterministic, test-backed logic.
 
 ---
 
-## Installation
+## Key features
+
+- Natural language preference interpretation with explicit constraint contracts
+- Domain-aware color anchoring and adaptive candidate pooling
+- Calibrated Lab-space scoring with deterministic tie-breaking
+- Fully test-covered core logic (pytest)
+- Streamlit demo application for interactive exploration
+
+---
+
+## Project structure
+
+```
+src/Shopping_assistant/     # Core Python package (NLP, color, scoring, recommendation)
+Scripts/                   # Offline asset generation and diagnostics (not required at runtime)
+data/                      # Versioned runtime assets (lexicons, anchors, calibration)
+tests/                     # Pytest-only unit and contract tests
+streamlit_app/             # Demo application
+```
+
+---
+
+## Quickstart
 
 ```bash
-git clone https://github.com/margotrud/Shopping_assistant.git
-cd pythonProject
-
 pip install -e .
-```
-### Optional dependencies
-
-```bash
-pip install -e .[dev]
-pip install -e .[embeddings]
-pip install -e .[scrape]
-```
-> Python ≥ 3.10 recommended.
-
----
-
-## Quick usage (API)
-
-```python
-from Shopping_assistant.reco.recommend import recommend_from_text
-
-df = recommend_from_text("I want a soft nude pink lipstick")
-print(df.head())
+pytest -q
 ```
 
----
-
-## Run Streamlit app
-
+Optional demo:
 ```bash
 streamlit run streamlit_app/Home.py
 ```
 
-This launches an interactive demo to explore the recommendation pipeline.
+---
+
+## Data & assets
+
+All runtime assets are versioned under `data/`.
+Scripts used to generate or validate these assets are documented in `Scripts/README.md`.
 
 ---
 
-## Assets & data policy
+## Scope and intent
 
-Lightweight runtime assets (lexicons, anchors, scoring configs) are versioned under `data/`:
-- `data/colors/`
-- `data/nlp/`
-- `data/models/`
-
-Heavy datasets, caches, generated reports, and experiment artifacts are **intentionally excluded**
-from version control.
-
-See `Scripts/README.md` for asset generation and analysis scripts.
+This repository prioritizes clarity, determinism, and testability over production concerns
+(scaling, latency, serving infrastructure).
+It is intended to demonstrate applied data science, NLP interpretation, and color-aware
+recommendation design.
 
 ---
 
-## Optional: full NLP features
+## License
 
-Some NLP components rely on external models.
-
-### spaCy model
-```bash
-python -m spacy download en_core_web_sm
-```
-
-### Sentence Transformers (embeddings)
-```bash
-pip install -e .[embeddings]
-```
-
-If these dependencies are not installed, related tests are automatically skipped and
-the core pipeline remains usable.
-
----
-
-## Tests
-
-```bash
-pytest -q
-```
-
-Tests requiring heavy models or embeddings are skipped when optional dependencies are missing.
-
----
-
-## Project status
-
-This project is a **research / portfolio artifact**, not a production system.
-The focus is on:
-- clean architecture
-- reproducible experiments
-- explicit constraints and diagnostics
+MIT
