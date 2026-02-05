@@ -276,6 +276,9 @@ def _semantic_topk(
 
 @dataclass(frozen=True, slots=True)
 class ResolvedColor:
+    """Does: represent a resolved color mention with canonical label and color payload.
+    Contains: normalized token/label plus optional hex/Lab and provenance metadata.
+    """
     alias: str
     name: str
     hex: str
@@ -596,4 +599,7 @@ class ColorLexicon:
 
 
 def load_default_lexicon() -> ColorLexicon:
+    """Does: load the default color lexicon from the packaged runtime JSON assets.
+    Returns: ColorLexicon instance used by mention extraction and interpretation.
+    """
     return ColorLexicon.load()
