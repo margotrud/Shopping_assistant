@@ -1,4 +1,14 @@
 # src/Shopping_assistant/io/assets.py
+"""Runtime asset loading and bundling.
+
+Does: Loads versioned JSON assets (lexicon, anchors, scoring configs/calibration, weights) and exposes them as a
+single AssetBundle consumed by NLP and recommendation layers.
+Public API: AssetBundle, load_default_assets(), and any load_* helpers referenced outside this module.
+Inputs: optional explicit paths (env or args); defaults to repo-local data/ paths when unspecified.
+Outputs: validated AssetBundle with parsed structures ready for fast repeated inference.
+Errors: raises FileNotFoundError/JSONDecodeError for missing/invalid assets; raises ValueError for schema violations.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +23,7 @@ from Shopping_assistant.io.data_schema import (
     validate_inventory,
     validate_calibration,
 )
+
 
 
 @dataclass(frozen=True)

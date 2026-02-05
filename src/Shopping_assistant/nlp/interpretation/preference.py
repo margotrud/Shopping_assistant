@@ -1,9 +1,12 @@
 # src/Shopping_assistant/nlp/preference.py
-"""
-NLP preference interpretation.
+"""Preference interpretation from text to a scoring-ready spec.
 
-Parses user text into structured color-related constraints,
-axes directions, and metadata used downstream for scoring.
+Does: Converts parsed mentions + constraints into a structured preference representation, including polarity,
+resolved color mentions, and axis-level targets used by recommendation/scoring.
+Public API: interpret_nlp() (and any other non-underscore entrypoints imported by reco/recommend and tests).
+Inputs: raw text (or pre-parsed mentions/constraints) plus AssetBundle resources (lexicon, thresholds, conflicts).
+Outputs: interpretation dict/objects including color tokens/anchors, axis targets, and ambiguity diagnostics.
+Errors: raises ValueError for invalid arguments; may propagate asset/lexicon errors if resources are inconsistent.
 """
 
 from __future__ import annotations

@@ -1,10 +1,14 @@
 # src/Shopping_assistant/nlp/parsing/constraints.py
-"""
-Constraint parsing logic.
+"""Constraint parsing for preference-guided recommendations.
 
-Extracts structured constraint signals (axis, direction, strength)
-from NLP outputs for downstream filtering and scoring.
+Does: Parses user text into structured constraint signals (e.g., intensity/axis bounds, negations, exclusions),
+normalizes them, and produces a constraint contract consumed by the preference interpreter and scoring layers.
+Public API: top-level parse/adapter functions that are imported by nlp/interpretation and tests (non-underscore).
+Inputs: raw user text (or tokenized spans) and optional lexicon/threshold resources.
+Outputs: normalized constraint objects/dicts with explicit polarity, target axis, and strength/threshold metadata.
+Errors: raises ValueError for invalid inputs; otherwise returns empty/neutral constraints when nothing is detected.
 """
+
 
 from __future__ import annotations
 

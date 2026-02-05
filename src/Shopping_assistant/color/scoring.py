@@ -1,11 +1,15 @@
 # src/Shopping_assistant/color/scoring.py
-from __future__ import annotations
-"""
-Shade scoring engine.
+"""Color-space scoring and ranking.
 
-Combines color-distance, NLP-derived constraints, optional preferences,
-and calibration to produce final ranking scores for candidate shades.
+Does: Scores candidate shades against a query specification using Lab-space distances and calibrated transforms,
+then ranks candidates with deterministic tie-breaking.
+Public API: QuerySpec, score_shades(), and any exported helpers used by reco/recommend.
+Inputs: query anchor/color constraints (Lab/hex) and candidate shade Lab values with optional metadata.
+Outputs: per-candidate score components and a final score suitable for sorting and thresholding.
+Errors: raises ValueError on malformed Lab/hex inputs; expects calibration/config assets to be valid.
 """
+
+from __future__ import annotations
 
 import argparse
 import json

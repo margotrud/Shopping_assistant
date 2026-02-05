@@ -1,11 +1,15 @@
 # src/Shopping_assistant/reco/recommend.py
 
-"""
-Text-to-shade recommendation pipeline.
+"""End-to-end recommendation entrypoints.
 
-Resolves color anchors from NLP, builds adaptive candidate pools,
-applies constraint-aware scoring, and returns ranked product shades.
+Does: Orchestrates NLP interpretation, anchor resolution, candidate pool selection, scoring, and final ranking
+for a user query; returns a stable, serialized result contract suitable for the Streamlit app and tests.
+Public API: recommend_from_text(), resolve_effective_anchor_from_text() and any other non-underscore functions here.
+Inputs: free-text query, optional AssetBundle, and optional configuration/limits (pool sizes, thresholds).
+Outputs: dict-like result with ranked products/shades plus intermediate diagnostics used by tests/goldens.
+Errors: raises ValueError for invalid inputs; may propagate IO errors when assets are missing or unreadable.
 """
+
 
 from __future__ import annotations
 
