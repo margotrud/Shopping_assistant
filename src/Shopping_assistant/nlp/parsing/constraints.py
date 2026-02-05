@@ -1062,6 +1062,9 @@ def extract_constraints_from_doc(
     mapper_threshold: float = 0.35,
     mapper_min_margin: float = 0.08,
 ) -> List[Constraint]:
+    """Does: extract normalized constraints from a full document.
+    Aggregates clause-level constraints into document-level signals.
+    """
     out: List[Constraint] = []
 
     blocked = {(_norm_text_piece(x) or x) for x in (blocked_lemmas or set()) if (x or "").strip()}
@@ -1179,6 +1182,9 @@ def extract_constraints_from_clause_text(
     mapper_threshold: float = 0.35,
     mapper_min_margin: float = 0.08,
 ) -> List[Constraint]:
+    """Does: extract constraints from a single clause text span.
+    Used by: document-level constraint aggregation.
+    """
     doc = nlp(clause_text)
     return extract_constraints_from_doc(
         doc,
@@ -1201,6 +1207,9 @@ def extract_constraints(
     mapper_threshold: float = 0.35,
     mapper_min_margin: float = 0.08,
 ) -> List[Constraint]:
+    """Does: unified entry point for constraint extraction.
+    Handles both document- and clause-level inputs.
+    """
     out: List[Constraint] = []
     for cid, text in clauses:
         doc = nlp(text)

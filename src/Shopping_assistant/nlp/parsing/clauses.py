@@ -424,8 +424,12 @@ def split_clauses_with_reasons(
 
 
 def chunks_to_clauses(chunks: List[ClauseChunk]) -> Tuple[Clause, ...]:
+    """Does: convert clause chunks into structured Clause objects.
+    Used by: clause segmentation pipeline.
+    """
     out: List[Clause] = []
     for i, ch in enumerate(chunks):
+
         text = ch.get("text", "")
         kind = ch.get("kind")
         reasons = ch.get("reasons") or []
@@ -454,6 +458,9 @@ def split_clauses(
     config: ClauseSplitConfig,
     debug: bool = False,
 ) -> Tuple[Clause, ...]:
+    """Does: split raw text into semantic clauses with boundaries.
+    Returns: tuple of Clause objects.
+    """
     chunks = split_clauses_with_reasons(
         text,
         nlp=nlp,
