@@ -109,11 +109,25 @@ def _ensure_dir(p: Path) -> Path:
 def _ext_from_content_type(ct: str) -> str:
     ct = (ct or "").split(";")[0].strip().lower()
     return {
+        "image/avif": ".avif",
         "image/jpeg": ".jpg",  # normalize jpeg -> .jpg locally
         "image/jpg": ".jpg",
         "image/png": ".png",
         "image/webp": ".webp",
-    }.get(ct, ".img")
+    }.get(ct, "")
+
+
+def _sniff_ext_from_bytes(b: bytes) -> str:
+    if len(b) >= 3 and b[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if len(b) >= 8 and b[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return ".webp"
+    # ISO BMFF: 'ftyp' at offset 4, brands: avif/avis/heic/heif (common on CDNs)
+    if len(b) >= 12 and b[4:8] == b"ftyp" and b[8:12] in {b"avif", b"avis", b"heic", b"heif"}:
+        return ".avif"
+    return ""
 
 
 def _build_session() -> requests.Session:
@@ -203,33 +217,54 @@ def _download_to_final_path(
 ) -> tuple[Optional[Path], str]:
     """
     One GET:
-      - read Content-Type
-      - decide ext
-      - write directly to final file name
+      - stream to temp file
+      - decide ext from Content-Type, else sniff magic bytes
+      - atomically move to final file name
     Returns (path or None, error_message).
     """
     headers = {}
     if referer:
         headers["Referer"] = referer
 
+    tmp_path = out_dir / f"{base_name}.part"
+
     try:
         with s.get(url, headers=headers, timeout=timeout, allow_redirects=True, stream=True) as r:
             if r.status_code >= 400:
-                return None, f"HTTPError: GET {r.status_code}"
+                return None, f"HTTPError: GET {r.status_code} url={url}"
 
-            ext = _ext_from_content_type(r.headers.get("Content-Type", ""))
-            final_path = out_dir / f"{base_name}{ext}"
+            ct = r.headers.get("Content-Type", "")
+            ext = _ext_from_content_type(ct)
 
-            if final_path.exists() and not overwrite:
-                return final_path, ""
-
-            with final_path.open("wb") as f:
+            head = b""
+            with tmp_path.open("wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 128):
-                    if chunk:
-                        f.write(chunk)
+                    if not chunk:
+                        continue
+                    if len(head) < 64:
+                        head += chunk[: (64 - len(head))]
+                    f.write(chunk)
 
+        if not ext:
+            ext = _sniff_ext_from_bytes(head)
+
+        if not ext:
+            tmp_path.unlink(missing_ok=True)
+            return None, f"UnknownImageType: ct={ct!r} url={url}"
+
+        final_path = out_dir / f"{base_name}{ext}"
+
+        if final_path.exists() and not overwrite:
+            tmp_path.unlink(missing_ok=True)
+            return final_path, ""
+
+        tmp_path.replace(final_path)
         return final_path, ""
     except Exception as e:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return None, f"{type(e).__name__}: {e}"
 
 
@@ -253,7 +288,7 @@ def _download_one(
 
     # fast reuse if already exists
     if not overwrite:
-        for ext in (".jpg", ".png", ".webp", ".img"):
+        for ext in (".jpg", ".png", ".webp", ".avif"):
             p = out_dir / f"{base_name}{ext}"
             if p.exists():
                 return p, "", ""
@@ -285,7 +320,9 @@ def _download_one(
             last_err = err or "unknown error"
             time.sleep(0.25 * (attempt + 1))  # basic backoff
 
-    return None, candidates[0] if candidates else "", last_err
+    if candidates:
+        return None, candidates[0], f"{last_err} (n_candidates={len(candidates)})"
+    return None, "", last_err or "unknown error"
 
 
 def run(
@@ -304,40 +341,45 @@ def run(
 
     out_dir = _ensure_dir(out_dir)
     index_csv_path = out_dir / "images_index.csv"
+    errors_csv_path = out_dir / "images_errors.csv"
 
     s = _build_session()
 
-    with csv_path.open("r", encoding="utf-8", newline="") as f_in, index_csv_path.open(
-        "w", encoding="utf-8", newline=""
-    ) as f_idx:
+    with (
+        csv_path.open("r", encoding="utf-8", newline="") as f_in,
+        index_csv_path.open("w", encoding="utf-8", newline="") as f_idx,
+        errors_csv_path.open("w", encoding="utf-8", newline="") as f_err,
+    ):
         reader = csv.DictReader(f_in)
         required = {"product_id", "shade_id", "chip_url"}
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"CSV missing required columns: {sorted(missing)}")
 
-        writer = csv.DictWriter(
-            f_idx,
-            fieldnames=[
-                "product_id",
-                "shade_id",
-                "shade_name",
-                "brand_name",
-                "product_name",
-                "page_url",
-                "chip_url",
-                "center_url_used",
-                "image_file",
-                "status",
-                "error",
-            ],
-        )
+        fieldnames = [
+            "row_idx",
+            "product_id",
+            "shade_id",
+            "shade_name",
+            "brand_name",
+            "product_name",
+            "page_url",
+            "chip_url",
+            "center_url_used",
+            "image_file",
+            "status",
+            "error",
+        ]
+
+        writer = csv.DictWriter(f_idx, fieldnames=fieldnames)
+        err_writer = csv.DictWriter(f_err, fieldnames=fieldnames)
         writer.writeheader()
+        err_writer.writeheader()
 
         ok_n = 0
         err_n = 0
 
-        for r in reader:
+        for row_idx, r in enumerate(reader, start=1):
             row = ShadeRow(
                 product_id=(r.get("product_id") or "").strip(),
                 shade_id=(r.get("shade_id") or "").strip(),
@@ -350,21 +392,22 @@ def run(
 
             if not row.product_id or not row.shade_id or not row.chip_url:
                 err_n += 1
-                writer.writerow(
-                    {
-                        "product_id": row.product_id,
-                        "shade_id": row.shade_id,
-                        "shade_name": row.shade_name,
-                        "brand_name": row.brand_name,
-                        "product_name": row.product_name,
-                        "page_url": row.url,
-                        "chip_url": row.chip_url,
-                        "center_url_used": "",
-                        "image_file": "",
-                        "status": "error",
-                        "error": "missing required values (product_id/shade_id/chip_url)",
-                    }
-                )
+                payload = {
+                    "row_idx": row_idx,
+                    "product_id": row.product_id,
+                    "shade_id": row.shade_id,
+                    "shade_name": row.shade_name,
+                    "brand_name": row.brand_name,
+                    "product_name": row.product_name,
+                    "page_url": row.url,
+                    "chip_url": row.chip_url,
+                    "center_url_used": "",
+                    "image_file": "",
+                    "status": "error",
+                    "error": "missing required values (product_id/shade_id/chip_url)",
+                }
+                writer.writerow(payload)
+                err_writer.writerow(payload)
                 continue
 
             image_path, center_url_used, error_msg = _download_one(
@@ -380,47 +423,49 @@ def run(
 
             if image_path is not None:
                 ok_n += 1
-                writer.writerow(
-                    {
-                        "product_id": row.product_id,
-                        "shade_id": row.shade_id,
-                        "shade_name": row.shade_name,
-                        "brand_name": row.brand_name,
-                        "product_name": row.product_name,
-                        "page_url": row.url,
-                        "chip_url": row.chip_url,
-                        "center_url_used": center_url_used,
-                        "image_file": str(image_path.as_posix()),
-                        "status": "ok",
-                        "error": "",
-                    }
-                )
+                payload = {
+                    "row_idx": row_idx,
+                    "product_id": row.product_id,
+                    "shade_id": row.shade_id,
+                    "shade_name": row.shade_name,
+                    "brand_name": row.brand_name,
+                    "product_name": row.product_name,
+                    "page_url": row.url,
+                    "chip_url": row.chip_url,
+                    "center_url_used": center_url_used,
+                    "image_file": str(image_path.as_posix()),
+                    "status": "ok",
+                    "error": "",
+                }
+                writer.writerow(payload)
                 print(f"[ok]  {row.product_id} {row.shade_id} -> {image_path.as_posix()}")
             else:
                 err_n += 1
-                writer.writerow(
-                    {
-                        "product_id": row.product_id,
-                        "shade_id": row.shade_id,
-                        "shade_name": row.shade_name,
-                        "brand_name": row.brand_name,
-                        "product_name": row.product_name,
-                        "page_url": row.url,
-                        "chip_url": row.chip_url,
-                        "center_url_used": center_url_used,
-                        "image_file": "",
-                        "status": "error",
-                        "error": error_msg,
-                    }
-                )
+                payload = {
+                    "row_idx": row_idx,
+                    "product_id": row.product_id,
+                    "shade_id": row.shade_id,
+                    "shade_name": row.shade_name,
+                    "brand_name": row.brand_name,
+                    "product_name": row.product_name,
+                    "page_url": row.url,
+                    "chip_url": row.chip_url,
+                    "center_url_used": center_url_used,
+                    "image_file": "",
+                    "status": "error",
+                    "error": error_msg,
+                }
+                writer.writerow(payload)
+                err_writer.writerow(payload)
                 print(f"[err] {row.product_id} {row.shade_id} -> {error_msg}", file=sys.stderr)
 
             if sleep_between > 0:
                 time.sleep(float(sleep_between))
 
     print(f"[done] ok={ok_n} error={err_n}")
-    print(f"[done] images_dir: {out_dir.resolve().as_posix()}")
-    print(f"[done] index_csv:  {index_csv_path.resolve().as_posix()}")
+    print(f"[done] images_dir:  {out_dir.resolve().as_posix()}")
+    print(f"[done] index_csv:   {index_csv_path.resolve().as_posix()}")
+    print(f"[done] errors_csv:  {errors_csv_path.resolve().as_posix()}")
     return index_csv_path
 
 
