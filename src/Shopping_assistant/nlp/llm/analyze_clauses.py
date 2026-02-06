@@ -9,6 +9,7 @@ used to inform color intent and constraint resolution.
 from __future__ import annotations
 
 import colorsys
+import logging
 import os
 import re
 from functools import lru_cache
@@ -22,9 +23,25 @@ from Shopping_assistant.nlp.parsing.polarity import PolarityLLM, infer_polarity_
 from Shopping_assistant.nlp.runtime.lexicon import ColorLexicon
 from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
 from Shopping_assistant.utils.optional_deps import require
-from Shopping_assistant.reco._colorconv import _hex_to_lab
-import logging
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Hex -> Lab (local import to avoid circular imports via reco/__init__.py)
+# ---------------------------------------------------------------------------
+
+
+def _hex_to_lab_safe(hex_str: str):
+    """Does: convert hex to Lab via reco._colorconv with a local import to avoid import-time cycles."""
+    try:
+        from Shopping_assistant.reco._colorconv import _hex_to_lab  # local import
+    except Exception:
+        return None
+    try:
+        return _hex_to_lab(hex_str)
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Public typed outputs
@@ -207,6 +224,7 @@ def _hex_to_hue_deg(hx: str) -> Optional[float]:
 def _srgb01_to_linear(x: float) -> float:
     return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
 
+
 def _lab_hue_deg_from_ab(a: float, b: float) -> float:
     return float(np.degrees(np.arctan2(b, a)) % 360.0)
 
@@ -231,6 +249,7 @@ def _iter_css_color_names() -> Iterable[str]:
 def _iter_xkcd_color_items() -> Iterable[Tuple[str, str]]:
     require("matplotlib", extra="matplotlib", purpose="XKCD colors name inventory")
     from matplotlib import colors as mcolors  # type: ignore
+
     return list(getattr(mcolors, "XKCD_COLORS").items())
 
 
@@ -279,7 +298,7 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
             hue = _hex_to_hue_deg(hx)
             if hue is not None:
                 info["hue_deg"] = hue
-            lab = _hex_to_lab(hx)
+            lab = _hex_to_lab_safe(hx)
             if lab is not None:
                 L, a, b = lab
                 info["lab_L"] = float(L)
@@ -317,7 +336,7 @@ def build_world_alias_index(*, include_xkcd: bool = True) -> Dict[str, Dict[str,
             if hue2 is not None:
                 info2["hue_deg"] = hue2
 
-            lab2 = _hex_to_lab(hx)
+            lab2 = _hex_to_lab_safe(hx)
             if lab2 is not None:
                 L2, a2, b2 = lab2
                 info2["lab_L"] = float(L2)
@@ -352,6 +371,7 @@ def _safe_float(x: Any) -> Optional[float]:
 def _color_lexicon() -> Optional[ColorLexicon]:
     try:
         from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
+
         return load_default_lexicon()
     except Exception as e:
         _dbg("lexicon_load_failed", err=str(e))
@@ -383,7 +403,7 @@ def _lexicon_resolve(cand: str, *, allow_semantic: bool) -> Optional[Dict[str, A
     if hue is not None:
         info["hue_deg"] = hue
 
-    lab = _hex_to_lab(hx)
+    lab = _hex_to_lab_safe(hx)
     if lab is not None:
         L, a, b = lab
         info["lab_L"] = float(L)
@@ -577,7 +597,14 @@ def extract_mentions_free(
                     if hue is not None:
                         matched["hue_deg"] = hue
 
-                _dbg("fallback_match", span=span, cand=cand, src=src, name=matched["name"], hx=matched.get("hex"))
+                _dbg(
+                    "fallback_match",
+                    span=span,
+                    cand=cand,
+                    src=src,
+                    name=matched["name"],
+                    hx=matched.get("hex"),
+                )
                 i += n
                 break
 
@@ -816,7 +843,8 @@ def extract_mentions_free(
                         head_i=int(head.i),
                         head_dep=getattr(head, "dep_", None),
                         head_children=[
-                            (c.text, getattr(c, "dep_", None), getattr(c, "pos_", None), int(c.i)) for c in head.children
+                            (c.text, getattr(c, "dep_", None), getattr(c, "pos_", None), int(c.i))
+                            for c in head.children
                         ],
                         span=[(t.text, getattr(t, "dep_", None), getattr(t, "pos_", None), int(t.i)) for t in ts],
                     )
@@ -996,7 +1024,10 @@ def extract_mentions_free(
 # ---------------------------------------------------------------------------
 
 
-def _extract_style_intents_from_chunks(chunks: List[ClauseChunk], color_index: Dict[str, Dict[str, Any]]) -> List[StyleIntent]:
+def _extract_style_intents_from_chunks(
+    chunks: List[ClauseChunk],
+    color_index: Dict[str, Dict[str, Any]],
+) -> List[StyleIntent]:
     stop_words = _stop_words_en()
     color_tokens = {tok for alias in color_index for tok in alias.split()}
     counts: Dict[str, int] = {}

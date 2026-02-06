@@ -25,7 +25,6 @@ from Shopping_assistant.nlp.parsing.polarity import (
     infer_polarity_for_mentions,
     make_free_polarity_fn,
 )
-from Shopping_assistant.nlp.resolve import resolve_preference
 from Shopping_assistant.nlp.resolve.conflicts import resolve_symbolic_conflicts
 from Shopping_assistant.nlp.resolve.constraint_normalizer import normalize_constraints
 from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
@@ -56,6 +55,16 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
 }
 
 _TOKEN_SPLIT_RE = re.compile(r"[^\w]+")
+
+
+def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
+    """Does: convert NLPResult into a normalized preference dict.
+    Used by: recommendation and scoring adapters.
+    """
+    # Local import to avoid circular import at module import-time.
+    from Shopping_assistant.nlp.resolve import resolve_preference
+
+    return resolve_preference(nlp_res)
 
 
 @lru_cache(maxsize=2)
@@ -222,7 +231,6 @@ def interpret_nlp(
     include_xkcd: bool = True,
     debug: bool = False,
 ) -> NLPResult:
-
     """
     Parse a free-text query into structured NLP signals used by the recommender.
 
@@ -231,7 +239,6 @@ def interpret_nlp(
     Returns: NLPResult containing clauses, mentions, constraints, and optional
     diagnostics/trace when debug=True.
     """
-
     nlp = load_spacy(spacy_model)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG
@@ -364,7 +371,10 @@ def interpret_nlp(
                         "raw": mention_obj.raw,
                         "polarity": mention_obj.polarity.value,
                         "confidence": float(mention_obj.confidence),
-                        "span": {"start": int(mention_obj.span.start), "end": int(mention_obj.span.end)},
+                        "span": {
+                            "start": int(mention_obj.span.start),
+                            "end": int(mention_obj.span.end),
+                        },
                         "meta": mention_obj.meta,
                     }
                 )
@@ -439,7 +449,8 @@ def interpret_nlp(
 
     # Hard filter: constraints without axis OR direction are not projectable and should not participate downstream.
     constraints_final = tuple(
-        c for c in constraints_final
+        c
+        for c in constraints_final
         if getattr(c, "axis", None) is not None and getattr(c, "direction", None) is not None
     )
 
@@ -464,7 +475,9 @@ def interpret_nlp(
                 "evidence": getattr(c, "evidence", None),
                 "meta": {
                     **(getattr(c, "meta", None) or {}),
-                    "axis_family_effective": (getattr(c, "meta", None) or {}).get("axis_family_effective"),
+                    "axis_family_effective": (getattr(c, "meta", None) or {}).get(
+                        "axis_family_effective"
+                    ),
                 },
             }
             for c in constraints_sorted
@@ -507,13 +520,6 @@ def interpret_preference_text(
         "diagnostics": _to_jsonable(res.diagnostics),
         "trace": _to_jsonable(res.trace),
     }
-
-
-def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
-    """Does: convert NLPResult into a normalized preference dict.
-    Used by: recommendation and scoring adapters.
-    """
-    return resolve_preference(nlp_res)
 
 
 def build_preference_from_text(
