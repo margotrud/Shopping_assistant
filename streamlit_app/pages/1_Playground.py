@@ -21,6 +21,10 @@ import streamlit as st
 # -----------------------------
 st.set_page_config(page_title="Playground", layout="wide", initial_sidebar_state="collapsed")
 
+# ---------------------------------------------------------------------
+# Debug: prove which file is running (keep while debugging)
+# ---------------------------------------------------------------------
+
 # Fix noisy Streamlit+torch watcher crash (log spam / occasional UI weirdness)
 try:
     st.set_option("server.fileWatcherType", "none")
@@ -35,9 +39,9 @@ SRC = ROOT / "src"
 if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from ui.theme import inject_styles
-from ui.nav import top_nav
 from ui.bootstrap import warmup_nlp_stack  # ✅ single source of truth
+from ui.nav import top_nav
+from ui.theme import inject_styles
 
 # -----------------------------
 # Accent colors (sync with Home.py)
@@ -62,10 +66,10 @@ def _show_inline_loader(msg: str) -> Any:
               <div style="
                 width:16px;height:16px;border-radius:50%;
                 border:2px solid rgba(19,42,99,0.16);
-                border-top-colors: {ACCENT};
+                border-top-color: {ACCENT};
                 animation: spin 0.8s linear infinite;
               "></div>
-              <div style="colors: rgba(19,42,99,0.70); font-size: 14px;">{html.escape(msg)}</div>
+              <div style="color: rgba(19,42,99,0.70); font-size: 14px;">{html.escape(msg)}</div>
             </div>
             <style>
               @keyframes spin {{
@@ -109,8 +113,7 @@ def _render_html(markup: str) -> None:
         return
 
     if hasattr(st, "html"):
-        # type: ignore[attr-defined]
-        st.html(markup)  # pyright: ignore
+        st.html(markup)  # type: ignore[attr-defined]
         return
 
     import streamlit.components.v1 as components
@@ -133,9 +136,9 @@ st.markdown(
           --border: rgba(19,42,99,0.12);
           --card: rgba(255,255,255,0.86);
 
-          --primary-colors: var(--accent) !important;
+          --primary-color: var(--accent) !important;
           --primaryColor: var(--accent) !important;
-          --st-colors-primary: var(--accent) !important;
+          --st-color-primary: var(--accent) !important;
           --stPrimaryColor: var(--accent) !important;
         }}
 
@@ -143,13 +146,13 @@ st.markdown(
         ::-moz-selection {{ background: rgba(122, 46, 46, 0.22) !important; }}
 
         *:focus,
-        *:focus-visible {{ outline-colors: var(--accent) !important; }}
+        *:focus-visible {{ outline-color: var(--accent) !important; }}
 
         button[data-testid="baseButton-primary"],
         div[data-testid="stFormSubmitButton"] button {{
-          background-colors: var(--accent) !important;
-          border-colors: var(--accent) !important;
-          colors: #fff !important;
+          background-color: var(--accent) !important;
+          border-color: var(--accent) !important;
+          color: #fff !important;
           box-shadow: none !important;
           border-radius: 14px !important;
         }}
@@ -160,12 +163,12 @@ st.markdown(
         }}
 
         div[data-testid="stTextInput"] div[data-baseweb="input"] {{
-          border-colors: rgba(19,42,99,0.16) !important;
+          border-color: rgba(19,42,99,0.16) !important;
           box-shadow: none !important;
           border-radius: 14px !important;
         }}
         div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {{
-          border-colors: var(--accent) !important;
+          border-color: var(--accent) !important;
           box-shadow: 0 0 0 3px rgba(122, 46, 46, 0.14) !important;
         }}
 
@@ -182,18 +185,18 @@ st.markdown(
           letter-spacing: 0.22em;
           text-transform: uppercase;
           font-size: 12px;
-          colors: rgba(19,42,99,0.60);
+          color: rgba(19,42,99,0.60);
           margin-bottom: 8px;
         }}
         .hero .h1 {{
           font-family: "Libre Baskerville", serif;
           font-size: 44px;
           line-height: 1.05;
-          colors: var(--ink);
+          color: var(--ink);
           margin-bottom: 8px;
         }}
         .hero .p {{
-          colors: rgba(19,42,99,0.62);
+          color: rgba(19,42,99,0.62);
           font-size: 15px;
           margin-bottom: 0px;
         }}
@@ -208,7 +211,7 @@ st.markdown(
           letter-spacing: 0.18em;
           text-transform: uppercase;
           font-size: 12px;
-          colors: rgba(19,42,99,0.56);
+          color: rgba(19,42,99,0.56);
           margin: 10px 0 10px 2px;
         }}
 
@@ -235,12 +238,12 @@ st.markdown(
           border-radius: 22px;
           overflow: hidden;
           box-shadow: 0 10px 26px rgba(19,42,99,0.06);
-          transition: transform 0.14s ease, box-shadow 0.14s ease, border-colors 0.14s ease;
+          transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
         }}
         .luxe-card:hover {{
           transform: translateY(-2px);
           box-shadow: 0 14px 34px rgba(19,42,99,0.10);
-          border-colors: rgba(122, 46, 46, 0.24);
+          border-color: rgba(122, 46, 46, 0.24);
         }}
 
         .luxe-media {{
@@ -271,14 +274,14 @@ st.markdown(
           letter-spacing: 0.22em;
           text-transform: uppercase;
           font-size: 11px;
-          colors: rgba(19,42,99,0.56);
+          color: rgba(19,42,99,0.56);
           margin-bottom: 8px;
         }}
 
         .luxe-title {{
           font-size: 16px;
           font-weight: 700;
-          colors: rgba(19,42,99,0.96);
+          color: rgba(19,42,99,0.96);
           line-height: 1.25;
           margin-bottom: 6px;
 
@@ -291,7 +294,7 @@ st.markdown(
 
         .luxe-shade {{
           font-size: 13px;
-          colors: rgba(19,42,99,0.72);
+          color: rgba(19,42,99,0.72);
           margin-bottom: 10px;
 
           display: -webkit-box;
@@ -324,7 +327,7 @@ st.markdown(
         }}
         .chip span {{
           font-size: 12px;
-          colors: rgba(19,42,99,0.68);
+          color: rgba(19,42,99,0.68);
           white-space: nowrap;
         }}
 
@@ -345,7 +348,7 @@ st.markdown(
         }}
         .pill span {{
           font-size: 12px;
-          colors: rgba(19,42,99,0.78);
+          color: rgba(19,42,99,0.78);
         }}
         </style>
         """
@@ -358,16 +361,48 @@ def _maybe_set_default_env_paths() -> None:
     """
     Does:
         Set SA_* asset env vars once per session if missing, using repo-relative defaults.
+        Robust discovery across the repo data folder (filename drift / folder drift).
     """
-    root = Path(os.environ.get("SA_ASSETS_ROOT", "data")).resolve()
+    assets_root_raw = os.environ.get("SA_ASSETS_ROOT", "data")
+    assets_root = Path(assets_root_raw)
+    if not assets_root.is_absolute():
+        assets_root = (ROOT / assets_root).resolve()
 
-    enriched_default = root / "enriched_data" / "Sephora_lipsticks_raw_items_with_chip_rgb_enriched.csv"
-    calib_default = root / "models" / "color_scoring_calibration.json"
-
-    if not os.environ.get("SA_ENRICHED_CSV_PATH") and enriched_default.exists():
-        os.environ["SA_ENRICHED_CSV_PATH"] = str(enriched_default)
+    calib_default = assets_root / "models" / "color_scoring_calibration.json"
     if not os.environ.get("SA_CALIBRATION_JSON_PATH") and calib_default.exists():
         os.environ["SA_CALIBRATION_JSON_PATH"] = str(calib_default)
+
+    if os.environ.get("SA_ENRICHED_CSV_PATH"):
+        return
+
+    candidates: list[Path] = []
+    preferred_dir = assets_root / "enriched_data"
+    if preferred_dir.exists():
+        candidates += list(preferred_dir.glob("*chip*rgb*enrich*.csv"))
+        if not candidates:
+            candidates += list(preferred_dir.glob("*.csv"))
+
+    if not candidates and assets_root.exists():
+        patterns = ["*chip*rgb*enrich*.csv", "*enrich*.csv", "*enriched*.csv", "*.csv"]
+        for pat in patterns:
+            try:
+                candidates = [p for p in assets_root.rglob(pat) if p.is_file()]
+            except Exception:
+                candidates = []
+            if candidates:
+                break
+
+    if not candidates:
+        return
+
+    def _score(p: Path) -> tuple[int, float]:
+        try:
+            return (int(p.stat().st_size), float(p.stat().st_mtime))
+        except Exception:
+            return (0, 0.0)
+
+    candidates.sort(key=_score, reverse=True)
+    os.environ["SA_ENRICHED_CSV_PATH"] = str(candidates[0])
 
 
 @st.cache_resource(show_spinner=False)
@@ -384,7 +419,6 @@ def _assets() -> Any:
     calib = os.environ.get("SA_CALIBRATION_JSON_PATH")
 
     if enriched and calib:
-        # IMPORTANT: load_assets expects Path-like objects (not str)
         return load_assets(enriched_csv=Path(enriched), calibration_json=Path(calib))
 
     raise FileNotFoundError(
@@ -455,6 +489,19 @@ def _canon_text(s: str) -> str:
     return " ".join(s.split())
 
 
+# Prefer formats your stack can always render.
+# AVIF may exist in cache but often fails to decode/inline; keep it last.
+EXTS_PREFERRED = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+
+
+def _ext_rank(p: Path) -> int:
+    suf = p.suffix.lower()
+    try:
+        return EXTS_PREFERRED.index(suf)
+    except ValueError:
+        return 999
+
+
 def _guess_mime_from_suffix(p: Path) -> str:
     suf = p.suffix.lower()
     if suf in {".jpg", ".jpeg"}:
@@ -463,6 +510,8 @@ def _guess_mime_from_suffix(p: Path) -> str:
         return "image/png"
     if suf == ".webp":
         return "image/webp"
+    if suf == ".avif":
+        return "image/avif"
     return "application/octet-stream"
 
 
@@ -482,6 +531,8 @@ def _file_to_data_uri(path: Path, *, max_side_px: int = 1200, jpeg_quality: int 
         enc = base64.b64encode(b).decode("ascii")
         return f"data:image/jpeg;base64,{enc}"
     except Exception:
+        # If PIL can't decode (common for AVIF without plugins), return raw bytes with mime.
+        # Many browsers/streamlit combos won't display data:image/avif;base64 -> caller should avoid AVIF.
         b = path.read_bytes()
         enc = base64.b64encode(b).decode("ascii")
         return f"data:{mime};base64,{enc}"
@@ -490,19 +541,24 @@ def _file_to_data_uri(path: Path, *, max_side_px: int = 1200, jpeg_quality: int 
 @st.cache_data(show_spinner=False)
 def _discover_image_cache_dir() -> Path:
     candidates = [
+        ROOT / "Scripts" / "tools" / "data_product_image_cache",
+        ROOT / "scripts" / "tools" / "data_product_image_cache",
+        ROOT / "Scripts" / "Tools" / "data_product_image_cache",
         ROOT / "Scripts" / "tools" / "data" / "_product_image_cache",
         ROOT / "scripts" / "tools" / "data" / "_product_image_cache",
         ROOT / "Scripts" / "Tools" / "data" / "_product_image_cache",
         ROOT / "data" / "_product_image_cache",
         ROOT / "Data" / "_product_image_cache",
+        ROOT / "data" / "product_image_cache",
+        ROOT / "Scripts" / "tools" / "product_image_cache",
     ]
 
     def _stats(p: Path) -> tuple[int, bool, int]:
         if not p.exists() or not p.is_dir():
             return (0, False, 0)
         has_index = (p / "images_index.csv").exists()
-        imgs = list(p.glob("*__*.*"))
-        img_count = len([x for x in imgs if x.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}])
+        imgs = [x for x in p.rglob("*") if x.is_file() and x.suffix.lower() in set(EXTS_PREFERRED)]
+        img_count = len(imgs)
         score = (100000 if has_index else 0) + img_count
         return (score, has_index, img_count)
 
@@ -511,6 +567,15 @@ def _discover_image_cache_dir() -> Path:
         score, _hi, _ic = _stats(p)
         if score > 0:
             ranked.append((score, p))
+
+    if not ranked:
+        try:
+            for p in ROOT.rglob("data_product_image_cache"):
+                score, _hi, _ic = _stats(p)
+                if score > 0:
+                    ranked.append((score, p))
+        except Exception:
+            pass
 
     if not ranked:
         try:
@@ -525,7 +590,7 @@ def _discover_image_cache_dir() -> Path:
         ranked.sort(key=lambda t: (-t[0], len(str(t[1]))))
         return ranked[0][1]
 
-    return ROOT / "Scripts" / "tools" / "data" / "_product_image_cache"
+    return ROOT / "Scripts" / "tools" / "data_product_image_cache"
 
 
 @st.cache_data(show_spinner=False)
@@ -544,6 +609,11 @@ def _load_local_image_maps() -> tuple[
     name2_map: dict[tuple[str, str], Path] = {}
     shade_all: list[tuple[str, Path]] = []
 
+    def _set_if_better(key: tuple[str, str], p: Path) -> None:
+        cur = id_map.get(key)
+        if cur is None or _ext_rank(p) < _ext_rank(cur):
+            id_map[key] = p
+
     if idx_path.exists():
         df = pd.read_csv(idx_path, dtype=str)
         for _, r in df.iterrows():
@@ -553,15 +623,25 @@ def _load_local_image_maps() -> tuple[
                 continue
 
             p_img: Optional[Path] = None
-            for ext in (".jpg", ".jpeg", ".png", ".webp"):
-                cand = out_dir / f"{pid}__{sid}{ext}"
-                if cand.exists():
-                    p_img = cand
+            for pid_try in (pid, (f"P{pid}" if not pid.startswith("P") else pid)):
+                for ext in EXTS_PREFERRED:
+                    cand = out_dir / f"{pid_try}__{sid}{ext}"
+                    if cand.exists():
+                        p_img = cand
+                        break
+                if p_img:
                     break
+
             if not p_img:
                 continue
 
-            id_map[(pid, sid)] = p_img
+            stem = p_img.stem
+            if "__" in stem:
+                pid0, sid0 = stem.split("__", 1)
+                pid0 = _norm_id(pid0)
+                sid0 = _norm_id(sid0)
+                if pid0 and sid0:
+                    _set_if_better((pid0, sid0), p_img)
 
             b = _canon_text(r.get("brand_name") or "")
             pr = _canon_text(r.get("product_name") or "")
@@ -574,18 +654,36 @@ def _load_local_image_maps() -> tuple[
             if sh:
                 shade_all.append((sh, p_img))
 
+    # Robust scan: recurse + accept multiple filename conventions.
+    #  - strict: {pid}__{sid}.{ext}
+    #  - loose:  {pid}_{sid}.{ext}, {pid}-{sid}.{ext}, {pid}--{sid}.{ext} (also in subfolders)
+    _ID_PAIR_RE = re.compile(
+        r"(?i)(?:^|[/\\])(?P<pid>P?\d+)[_\-]{1,2}(?P<sid>\d+)\.(?P<ext>[a-z0-9]+)$"
+    )
+
     if out_dir.exists():
-        for p in out_dir.glob("*__*.*"):
-            if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        for p in out_dir.rglob("*"):
+            if not p.is_file():
                 continue
+            if p.suffix.lower() not in set(EXTS_PREFERRED):
+                continue
+
             stem = p.stem
-            if "__" not in stem:
+            if "__" in stem:
+                pid, sid = stem.split("__", 1)
+                pid = _norm_id(pid)
+                sid = _norm_id(sid)
+                if pid and sid:
+                    _set_if_better((pid, sid), p)
                 continue
-            pid, sid = stem.split("__", 1)
-            pid = _norm_id(pid)
-            sid = _norm_id(sid)
-            if pid and sid and (pid, sid) not in id_map:
-                id_map[(pid, sid)] = p
+
+            rel = str(p.relative_to(out_dir)).replace("\\", "/")
+            m = _ID_PAIR_RE.search(rel)
+            if m:
+                pid = _norm_id(m.group("pid"))
+                sid = _norm_id(m.group("sid"))
+                if pid and sid:
+                    _set_if_better((pid, sid), p)
 
     shade_u_map: dict[str, Path] = {}
     if shade_all:
@@ -595,6 +693,18 @@ def _load_local_image_maps() -> tuple[
                 shade_u_map[sh] = p
 
     return out_dir, id_map, name_map, name2_map, shade_u_map
+
+
+def _svg_swatch_data_uri(hx: str) -> str:
+    hx2 = (hx or "").strip()
+    if not (hx2.startswith("#") and len(hx2) == 7):
+        hx2 = "#F2F2F2"
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='825'>"
+        f"<rect width='100%' height='100%' fill='{hx2}'/>"
+        "</svg>"
+    )
+    return "data:image/svg+xml;utf8," + svg
 
 
 def _pick_local_image_data_uri_any(
@@ -661,7 +771,6 @@ def _pick_local_image_data_uri_any(
 def _explain_from_resolved(text: str) -> dict[str, Any]:
     from Shopping_assistant.nlp.interpretation.preference import interpret_nlp  # type: ignore
     from Shopping_assistant.nlp.resolve.preference_resolver import resolve_preference  # type: ignore
-    from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
 
     nlp_res = interpret_nlp(text, debug=False)
     resolved = resolve_preference(nlp_res)
@@ -705,18 +814,20 @@ def _explain_from_resolved(text: str) -> dict[str, Any]:
 
     target_hue: Optional[float] = None
     target_color: Optional[str] = None
+
     if likes_u:
+        cand = likes_u[0].strip().lower()
+        target_color = cand
         try:
+            from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
+
             idx = build_world_alias_index(include_xkcd=True)
-            cand = likes_u[0].strip().lower()
             info = idx.get(cand) if isinstance(idx, dict) else None
             hx = info.get("hex") if isinstance(info, dict) else None
             if isinstance(hx, str) and hx:
                 target_hue = _hex_to_hue_deg(hx)
-                target_color = cand
         except Exception:
             target_hue = None
-            target_color = None
 
     return {
         "likes": likes_u,
@@ -737,11 +848,7 @@ def _recommend(text: str, *, assets: Any, topk: int = 64) -> pd.DataFrame:
 
 
 def _chip(dot_color: Optional[str], label: str) -> str:
-    dot = (
-        dot_color
-        if (isinstance(dot_color, str) and dot_color.startswith("#") and len(dot_color) == 7)
-        else "#FFFFFF"
-    )
+    dot = dot_color if (isinstance(dot_color, str) and dot_color.startswith("#") and len(dot_color) == 7) else "#FFFFFF"
     return (
         f'<div class="chip">'
         f'<span class="dot" style="background:{html.escape(dot)};"></span>'
@@ -782,15 +889,7 @@ def _build_rationale_chips(row: pd.Series, *, top: pd.DataFrame, expl: dict[str,
     return chips[:3]
 
 
-def _render_card_html(
-    *,
-    is_top: bool,
-    brand: str,
-    product: str,
-    shade: str,
-    image_url: str,
-    chips_html: str,
-) -> None:
+def _render_card_html(*, is_top: bool, brand: str, product: str, shade: str, image_url: str, chips_html: str) -> None:
     b = html.escape(brand or "—")
     p = html.escape(product or "—")
     s = html.escape(shade or "—")
@@ -824,21 +923,20 @@ st.markdown(
         <div class="hero">
           <div class="kicker">Playground</div>
           <div class="h1">Find the shade you mean.</div>
-          <p class="p">Describe a lipstick in natural language. The ranking adapts to colors, depth, brightness, and constraints</p>
+          <p class="p">Describe what you want. The system extracts color constraints and ranks the closest shades.</p>
         </div>
         """
     ),
     unsafe_allow_html=True,
 )
 
-# show "Results: 3/6" from the start (stateful)
 if "show_n" not in st.session_state:
     st.session_state["show_n"] = 3
 
 c_opt, _ = st.columns([1, 3], gap="large")
 with c_opt:
-    show_n = st.radio(
-        "Results",
+    _ = st.radio(
+        "Top Results",
         options=[3, 6],
         horizontal=True,
         index=0 if st.session_state["show_n"] == 3 else 1,
@@ -855,7 +953,7 @@ with st.form("playground_form", clear_on_submit=False):
             key="playground_query",
         )
     with right:
-        submitted = st.form_submit_button("Find shades", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Rank shades", type="primary", use_container_width=True)
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
@@ -864,7 +962,6 @@ if submitted:
         st.warning("Please enter a short description.")
         st.stop()
 
-    # warmup ONLY when needed (cached inside warmup_nlp_stack)
     loader = _show_inline_loader("Loading engine…")
     try:
         warmup_nlp_stack()
@@ -875,6 +972,7 @@ if submitted:
 
     assets = _assets()
     out_dir, id_map, name_map, name2_map, shade_u_map = _load_local_image_maps()
+
 
     loader = _show_inline_loader("Understanding your request…")
     expl = _explain_from_resolved(text)
@@ -889,6 +987,8 @@ if submitted:
         st.stop()
 
     items: list[dict[str, Any]] = []
+    missing_local = 0
+
     for i in range(len(top)):
         row = top.iloc[i]
         img_local = _pick_local_image_data_uri_any(
@@ -898,8 +998,13 @@ if submitted:
             name2_map=name2_map,
             shade_u_map=shade_u_map,
         )
+
+        # Fallback: swatch from chip_hex if local image is missing OR if the local image is unusable.
+        # (Still possible if selected format is AVIF and the browser can't display it.)
         if not img_local:
-            continue
+            missing_local += 1
+            hx = _pick_hex(row)
+            img_local = _svg_swatch_data_uri(hx or "#F2F2F2")
 
         brand = _pick_first(row, ["brand_name", "brand"]) or "—"
         product = _pick_first(row, ["product_name", "product", "name"]) or "—"
@@ -917,16 +1022,15 @@ if submitted:
                 "chips_html": chips_html,
             }
         )
+
         if len(items) >= int(st.session_state["show_n"]):
             break
 
-    if not items:
-        st.warning(
-            f"No results with local images found. "
-            f"Discovered cache dir: '{out_dir}'. "
-            f"Check that the folder contains files like '{{product_id}}__{{shade_id}}.jpg'."
+    if missing_local > 0:
+        st.caption(
+            f"local_images_missing={missing_local} | cache_dir='{out_dir}' | "
+            f"showing swatch placeholders when needed"
         )
-        st.stop()
 
     st.markdown('<div class="section-title">Matches</div>', unsafe_allow_html=True)
 
