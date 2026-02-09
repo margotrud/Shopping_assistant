@@ -1,5 +1,4 @@
 # src/Shopping_assistant/reco/recommend.py
-
 """End-to-end recommendation entrypoints.
 
 Does: Orchestrates NLP interpretation, anchor resolution, candidate pool selection, scoring, and final ranking
@@ -10,10 +9,10 @@ Outputs: dict-like result with ranked products/shades plus intermediate diagnost
 Errors: raises ValueError for invalid inputs; may propagate IO errors when assets are missing or unreadable.
 """
 
-
 from __future__ import annotations
 
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -68,6 +67,11 @@ from ._pooling import (
 logger = logging.getLogger(__name__)
 
 
+def _env_bool(key: str, default: bool = True) -> bool:
+    v = os.environ.get(key, "1" if default else "0")
+    return str(v).strip().lower() in {"1", "true", "yes"}
+
+
 # -----------------------------------------------------------------------------
 # Local helpers
 # -----------------------------------------------------------------------------
@@ -94,7 +98,6 @@ def _wants_hi_chroma(nlp_res) -> bool:
     LOWER_BLOCK_AXES = {"depth", "brightness"}
     LOWER_DIRS = {"lower", "down", "less"}
 
-    # --- hard override: any explicit lowering on depth/brightness blocks hi-chroma ---
     for c in cons:
         axis = getattr(c, "axis", None)
         direction = getattr(c, "direction", None)
@@ -103,9 +106,8 @@ def _wants_hi_chroma(nlp_res) -> bool:
         if axis in LOWER_BLOCK_AXES and direction in LOWER_DIRS:
             return False
 
-    # margins: tuned to your observed scales (MiniLM sims ~0.3-0.6)
     MARGIN_RANKED = 0.03
-    MARGIN_VOTE_AVG = 0.04  # slightly looser for vote aggregates
+    MARGIN_VOTE_AVG = 0.04
 
     def _near_tie_ranked(axis_debug) -> bool:
         ranked = axis_debug.get("ranked")
@@ -157,11 +159,9 @@ def _wants_hi_chroma(nlp_res) -> bool:
         axis = axis.value if hasattr(axis, "value") else axis
         direction = direction.value if hasattr(direction, "value") else direction
 
-        # direct chroma intent
         if axis in HI_AXES and direction in HI_DIRS:
             return True
 
-        # ambiguous: brightness but near-tie with chroma axes
         if axis == "brightness" and direction in HI_DIRS:
             axis_debug = meta.get("axis_debug") or {}
             if _near_tie_ranked(axis_debug):
@@ -180,7 +180,8 @@ def resolve_anchor_from_text(text: str, *, debug: bool = False) -> dict:
     Inputs: free-text query.
     Returns: dict with anchor_hex, anchor_lab, and minimal NLP context.
     """
-    nlp_res = interpret_nlp(text, debug=debug)
+    include_xkcd = _env_bool("SA_INCLUDE_XKCD", True)
+    nlp_res = interpret_nlp(text, include_xkcd=include_xkcd, debug=debug)
     has_color = _has_color_like_mention(nlp_res)
 
     seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
@@ -222,7 +223,8 @@ def resolve_effective_anchor_from_text(
     if assets is None:
         assets = load_default_assets()
 
-    nlp_res = interpret_nlp(text, debug=debug)
+    include_xkcd = _env_bool("SA_INCLUDE_XKCD", True)
+    nlp_res = interpret_nlp(text, include_xkcd=include_xkcd, debug=debug)
     has_color = _has_color_like_mention(nlp_res)
 
     seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
@@ -257,9 +259,7 @@ def resolve_effective_anchor_from_text(
     want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
     chroma_q = 0.90 if want_hiC else None
 
-    if has_color and anchor_eff is not None and family_label is not None and (
-        _is_plain_color_query(nlp_res) or want_hiC
-    ):
+    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
@@ -324,7 +324,8 @@ def recommend_from_text(
     pool_cap = int(min(max(int(candidate_pool_topn), 1), len(inv))) if len(inv) else 0
     pool_cap = int(min(pool_cap, int(_MAX_POOL_TOPN)))
 
-    nlp_res = interpret_nlp(text, debug=debug)
+    include_xkcd = _env_bool("SA_INCLUDE_XKCD", True)
+    nlp_res = interpret_nlp(text, include_xkcd=include_xkcd, debug=debug)
     has_color = _has_color_like_mention(nlp_res)
 
     seed_hex_nlp = _seed_hex_from_nlp(nlp_res)
@@ -355,9 +356,7 @@ def recommend_from_text(
     want_hiC = bool(_wants_hi_chroma(nlp_res)) and (len(cons) == 1)
     chroma_q = 0.90 if want_hiC else None
 
-    if has_color and anchor_eff is not None and family_label is not None and (
-        _is_plain_color_query(nlp_res) or want_hiC
-    ):
+    if has_color and anchor_eff is not None and family_label is not None and (_is_plain_color_query(nlp_res) or want_hiC):
         dom = _domain_anchor_from_naming_probs(
             inv,
             label=family_label,
@@ -389,10 +388,8 @@ def recommend_from_text(
         aC_raw = float(np.hypot(float(anchor_eff[1]), float(anchor_eff[2])))
         thr_used = float(p.de00_max_neutral if aC_raw < float(p.neutral_anchor_c_max) else p.de00_max)
 
-        # coverage gate BEFORE any restriction
         min_de_all, n_support_all = _anchor_inventory_coverage(inv, tuple(map(float, anchor_eff)), thr_used)
 
-        # only restrict by hue when dataset support is weak at the strict threshold
         if n_support_all < int(_HUE_FALLBACK_MIN_POOL_N):
             inv_eff, anchor_eff2, fb_dbg = _domain_pool_and_anchor(
                 inv,
@@ -412,7 +409,6 @@ def recommend_from_text(
 
         anchor_eff = anchor_eff2
 
-        # coverage gate AFTER restriction
         min_de_eff, n_support_eff = _anchor_inventory_coverage(inv_eff, tuple(map(float, anchor_eff)), thr_used)
 
         df_pool = hard_color_pool(inv_eff, anchor_lab=anchor_eff, params=p)
@@ -420,7 +416,6 @@ def recommend_from_text(
         if pool_cap > 0 and len(df_pool) > pool_cap:
             df_pool = df_pool.head(pool_cap).copy()
 
-        # constraint-aware widening (generic): avoid "frozen" pools on low-chroma anchors
         nlp_constraints_A = tuple(getattr(nlp_res, "constraints", ()) or ())
         if nlp_constraints_A:
             min_pool_cons = max(int(_POOL_FALLBACK_MIN_N), 120)
@@ -493,7 +488,6 @@ def recommend_from_text(
             logger.debug("coverage_all: min_de00=%.2f n_support<=thr=%d", float(min_de_all), int(n_support_all))
             logger.debug("coverage_eff: min_de00=%.2f n_support<=thr=%d", float(min_de_eff), int(n_support_eff))
 
-        # FAILSAFE PATHS
         if df_pool.empty or (len(df_pool) < int(_POOL_FALLBACK_MIN_N)):
             df_pool2, adbg = _adaptive_de00_pool(
                 inv_eff,

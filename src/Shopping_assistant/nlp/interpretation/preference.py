@@ -1,43 +1,33 @@
 # src/Shopping_assistant/nlp/preference.py
 """Preference interpretation from text to a scoring-ready spec.
 
-Does: Converts parsed mentions + constraints into a structured preference representation, including polarity,
-resolved color mentions, and axis-level targets used by recommendation/scoring.
-Public API: interpret_nlp() (and any other non-underscore entrypoints imported by reco/recommend and tests).
-Inputs: raw text (or pre-parsed mentions/constraints) plus AssetBundle resources (lexicon, thresholds, conflicts).
-Outputs: interpretation dict/objects including color tokens/anchors, axis targets, and ambiguity diagnostics.
-Errors: raises ValueError for invalid arguments; may propagate asset/lexicon errors if resources are inconsistent.
+Does: Converts parsed mentions + constraints into a structured preference representation.
+Public API: interpret_nlp() and helpers used by reco/recommend and tests.
+Inputs/Outputs: raw text -> NLPResult (clauses, mentions, constraints, diagnostics/trace).
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
-from dataclasses import is_dataclass, replace
+import time
+from dataclasses import asdict, is_dataclass, replace
+from enum import Enum
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
 
 from Shopping_assistant.nlp.axes.axis_family import resolve_axis_family
-from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index, extract_mentions_free
 from Shopping_assistant.nlp.parsing.clauses import ClauseSplitConfig, split_clauses
 from Shopping_assistant.nlp.parsing.constraints import extract_constraints_from_clause_text
-from Shopping_assistant.nlp.parsing.polarity import (
-    decide_clause_polarity,
-    infer_polarity_for_mentions,
-    make_free_polarity_fn,
-)
+from Shopping_assistant.nlp.parsing.polarity import decide_clause_polarity, infer_polarity_for_mentions, make_polarity_fn
 from Shopping_assistant.nlp.resolve.conflicts import resolve_symbolic_conflicts
 from Shopping_assistant.nlp.resolve.constraint_normalizer import normalize_constraints
 from Shopping_assistant.nlp.runtime.lexicon import load_default_lexicon
 from Shopping_assistant.nlp.runtime.spacy_runtime import load_spacy
-from Shopping_assistant.nlp.schema import (
-    Clause,
-    Constraint,
-    Mention,
-    MentionKind,
-    NLPResult,
-    Polarity,
-    Span,
-)
+from Shopping_assistant.nlp.schema import Clause, Constraint, Mention, MentionKind, NLPResult, Polarity, Span
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "interpret_nlp",
@@ -57,30 +47,68 @@ _DEFAULT_CLAUSE_CFG: ClauseSplitConfig = {
 _TOKEN_SPLIT_RE = re.compile(r"[^\w]+")
 
 
-def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
-    """Does: convert NLPResult into a normalized preference dict.
-    Used by: recommendation and scoring adapters.
-    """
-    # Local import to avoid circular import at module import-time.
-    from Shopping_assistant.nlp.resolve import resolve_preference
+# -----------------------------
+# Perf diagnostics (opt-in)
+# -----------------------------
+def _perf_on() -> bool:
+    v = os.environ.get("SA_NLP_PERF", "0")
+    return str(v).strip().lower() in {"1", "true", "yes"}
 
-    return resolve_preference(nlp_res)
+
+def _t() -> float:
+    return time.perf_counter()
+
+
+def _log_dt(label: str, dt: float) -> None:
+    if _perf_on():
+        logger.warning("[SA_NLP_PERF] %s=%.3fs", label, float(dt))
+
+
+# -----------------------------
+# Hot caches (process-global)
+# -----------------------------
+@lru_cache(maxsize=4)
+def _get_spacy_nlp(model: str):
+    """
+    Does:
+        Load + cache spaCy pipeline (process-global) to avoid per-request reloads.
+    """
+    return load_spacy(model)
 
 
 @lru_cache(maxsize=2)
 def _get_color_index(include_xkcd: bool) -> Dict[str, Dict[str, Any]]:
-    """
-    Does:
-        Build the alias index used for mention extraction: default lexicon first, optional CSS/XKCD additive only.
-    """
+    """Does: Build alias index; adds CSS/XKCD only if include_xkcd=True."""
     idx = dict(load_default_lexicon().raw_index)
 
+    # IMPORTANT: keep this import lazy; some "llm/*" modules may pull heavy deps.
     if include_xkcd:
-        world = build_world_alias_index(include_xkcd=True)
-        for k, v in world.items():
-            idx.setdefault(k, v)
+        try:
+            from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
+
+            world = build_world_alias_index(include_xkcd=True)
+            if isinstance(world, dict):
+                for k, v in world.items():
+                    idx.setdefault(k, v)
+        except Exception:
+            pass
 
     return idx
+
+
+@lru_cache(maxsize=1)
+def _get_mention_extractor():
+    """Does: Import mention extractor lazily to avoid heavy imports on module load."""
+    from Shopping_assistant.nlp.llm.analyze_clauses import extract_mentions_free  # type: ignore
+
+    return extract_mentions_free
+
+
+def build_preference_from_nlp(nlp_res: NLPResult) -> Dict[str, Any]:
+    """Does: Convert NLPResult into a normalized preference dict."""
+    from Shopping_assistant.nlp.resolve import resolve_preference
+
+    return resolve_preference(nlp_res)
 
 
 def _to_polarity(x: Optional[str]) -> Polarity:
@@ -104,10 +132,7 @@ def _clause_global_offset(cl: Clause) -> int:
 
 
 def _mention_span_from_doc(doc: Any, tok_start: Any, tok_len: Any) -> Span:
-    """
-    Does:
-        Convert (tok_start, tok_len) into a local character span using the spaCy doc.
-    """
+    """Does: Convert (tok_start, tok_len) into local char span using spaCy doc."""
     if not isinstance(tok_start, int) or not isinstance(tok_len, int) or tok_len <= 0:
         return Span(0, 0)
     if tok_start < 0 or tok_start >= len(doc):
@@ -120,20 +145,11 @@ def _mention_span_from_doc(doc: Any, tok_start: Any, tok_len: Any) -> Span:
 
 
 def _mention_sort_key(m: Mention) -> tuple:
-    return (
-        int(m.clause_id),
-        int(m.span.start),
-        str(m.kind.value),
-        str(m.canonical),
-        str(m.raw),
-    )
+    return (int(m.clause_id), int(m.span.start), str(m.kind.value), str(m.canonical), str(m.raw))
 
 
 def _constraint_sort_key(c: Constraint) -> tuple:
-    """
-    Important:
-        This must be None-safe because direction/axis can be Optional after conflict resolution/normalization.
-    """
+    """Does: None-safe sort key for constraints after normalization."""
     meta = c.meta or {}
     gs = meta.get("evidence_global_start")
     ge = meta.get("evidence_global_end")
@@ -156,10 +172,7 @@ def _constraint_sort_key(c: Constraint) -> tuple:
 
 
 def _inject_axis_family(c: Constraint) -> Constraint:
-    """
-    Does:
-        Inject axis_family_effective into constraint.meta via resolve_axis_family().
-    """
+    """Does: Inject axis_family_effective into constraint.meta."""
     meta = dict(c.meta or {})
     family = resolve_axis_family({"axis": c.axis.value if c.axis else None, "meta": meta})
     if family:
@@ -168,10 +181,7 @@ def _inject_axis_family(c: Constraint) -> Constraint:
 
 
 def _blocked_lemmas_from_mention_dicts(mention_dicts: List[Dict[str, Any]]) -> Set[str]:
-    """
-    Does:
-        Build a token blocklist from extracted mentions (raw alias + canonical name).
-    """
+    """Does: Build token blocklist from extracted mentions (alias + canonical)."""
     blocked: Set[str] = set()
     for m in mention_dicts:
         if not isinstance(m, dict):
@@ -185,13 +195,7 @@ def _blocked_lemmas_from_mention_dicts(mention_dicts: List[Dict[str, Any]]) -> S
 
 
 def _to_jsonable(x: Any) -> Any:
-    """
-    Does:
-        Convert dataclasses/slots/enums/tuples to JSON-serializable primitives for debug outputs.
-    """
-    from dataclasses import asdict
-    from enum import Enum
-
+    """Does: Convert dataclasses/enums/slots/iterables to JSON primitives."""
     if x is None or isinstance(x, (str, int, float, bool)):
         return x
     if isinstance(x, Enum):
@@ -213,10 +217,7 @@ def _to_jsonable(x: Any) -> Any:
 
 
 def _enum_value_or_none(x: Any) -> Any:
-    """
-    Does:
-        Safely return Enum.value if Enum-like, else None (for Optional enums).
-    """
+    """Does: Return Enum.value if Enum-like, else None."""
     if x is None:
         return None
     v = getattr(x, "value", None)
@@ -229,29 +230,46 @@ def interpret_nlp(
     spacy_model: str = "en_core_web_sm",
     clause_config: Optional[ClauseSplitConfig] = None,
     include_xkcd: bool = True,
+    polarity_backend: Optional[str] = None,
     debug: bool = False,
 ) -> NLPResult:
     """
-    Parse a free-text query into structured NLP signals used by the recommender.
-
-    Does: split text into clauses, extract color mentions, infer polarity,
-    extract and normalize symbolic constraints (axes, direction, strength).
-    Returns: NLPResult containing clauses, mentions, constraints, and optional
-    diagnostics/trace when debug=True.
+    Does: Split into clauses; extract mentions; infer polarity; extract/normalize constraints.
+    Returns: NLPResult (clauses, mentions, constraints, diagnostics/trace if debug=True).
     """
-    nlp = load_spacy(spacy_model)
+    t_all = _t()
+
+    t0 = _t()
+    nlp = _get_spacy_nlp(spacy_model)
+    _log_dt("load_spacy", _t() - t0)
+
+    # If safe, disable expensive pipes we don't use. Keep tagger/parser for deps.
+    t0 = _t()
+    try:
+        disable = ["ner", "textcat", "lemmatizer"]
+        keep = set(nlp.pipe_names)
+        for name in disable:
+            if name in keep:
+                nlp.disable_pipes(name)
+    except Exception:
+        pass
+    _log_dt("spacy_disable_pipes", _t() - t0)
 
     cfg = clause_config or _DEFAULT_CLAUSE_CFG
-    clauses_in = split_clauses(
-        text,
-        nlp=nlp,
-        spacy_model=spacy_model,
-        config=cfg,
-        debug=debug,
-    )
 
+    t0 = _t()
+    clauses_in = split_clauses(text, nlp=nlp, spacy_model=spacy_model, config=cfg, debug=debug)
+    _log_dt("split_clauses", _t() - t0)
+
+    t0 = _t()
     color_index = _get_color_index(include_xkcd)
-    pol_fn = make_free_polarity_fn()
+    _log_dt("get_color_index", _t() - t0)
+
+    t0 = _t()
+    pol_fn = make_polarity_fn(backend=polarity_backend, debug=debug)
+    _log_dt("make_polarity_fn", _t() - t0)
+
+    extract_mentions_free = _get_mention_extractor()
 
     all_mentions: List[Mention] = []
     all_constraints: List[Constraint] = []
@@ -274,11 +292,11 @@ def interpret_nlp(
         ]
         diagnostics["mentions"] = []
         diagnostics["constraints"] = []
-
         trace = {
             "input_text": text,
             "spacy_model": spacy_model,
             "include_xkcd": include_xkcd,
+            "polarity_backend": polarity_backend,
             "clauses": [],
             "mentions": [],
             "constraints_raw": [],
@@ -293,28 +311,29 @@ def interpret_nlp(
             continue
 
         clause_offset = _clause_global_offset(cl)
+
+        t0 = _t()
         doc = nlp(clause_text)
+        _log_dt("spacy_doc", _t() - t0)
 
+        t0 = _t()
         mention_dicts = extract_mentions_free(clause_text, color_index, doc=doc)
+        _log_dt("extract_mentions", _t() - t0)
 
-        mention_names = [
-            str(m.get("name") or "").strip()
-            for m in mention_dicts
-            if isinstance(m, dict)
-        ]
+        mention_names = [str(m.get("name") or "").strip() for m in mention_dicts if isinstance(m, dict)]
         mention_names = [m for m in mention_names if m]
         mention_set = set(mention_names)
 
-        blocked_lemmas = _blocked_lemmas_from_mention_dicts(
-            [m for m in mention_dicts if isinstance(m, dict)]
-        )
+        blocked_lemmas = _blocked_lemmas_from_mention_dicts([m for m in mention_dicts if isinstance(m, dict)])
 
+        t0 = _t()
         pol_map = infer_polarity_for_mentions(
             clause_text,
             mention_names,
             llm_polarity_fn=pol_fn,
             elliptical_neg=cl.elliptical_neg,
         )
+        _log_dt("infer_polarity", _t() - t0)
 
         cl_polarity = decide_clause_polarity(pol_map, elliptical_neg=cl.elliptical_neg)
         clauses_out.append(replace(cl, polarity=cl_polarity))
@@ -371,14 +390,12 @@ def interpret_nlp(
                         "raw": mention_obj.raw,
                         "polarity": mention_obj.polarity.value,
                         "confidence": float(mention_obj.confidence),
-                        "span": {
-                            "start": int(mention_obj.span.start),
-                            "end": int(mention_obj.span.end),
-                        },
+                        "span": {"start": int(mention_obj.span.start), "end": int(mention_obj.span.end)},
                         "meta": mention_obj.meta,
                     }
                 )
 
+        t0 = _t()
         cons = extract_constraints_from_clause_text(
             clause_text,
             clause_id=cl.clause_id,
@@ -386,6 +403,7 @@ def interpret_nlp(
             blocked_lemmas=blocked_lemmas,
             nlp=nlp,
         )
+        _log_dt("extract_constraints", _t() - t0)
 
         for c in cons:
             meta = dict(c.meta or {})
@@ -444,18 +462,20 @@ def interpret_nlp(
                 ]
             )
 
-    # Conflict resolution can legally yield constraints with optional fields (axis/direction canceled)
+    t0 = _t()
     constraints_final, conflicts_diag = resolve_symbolic_conflicts(tuple(all_constraints))
+    _log_dt("resolve_conflicts", _t() - t0)
 
-    # Hard filter: constraints without axis OR direction are not projectable and should not participate downstream.
     constraints_final = tuple(
         c
         for c in constraints_final
         if getattr(c, "axis", None) is not None and getattr(c, "direction", None) is not None
     )
 
+    t0 = _t()
     constraints_final = tuple(_inject_axis_family(c) for c in constraints_final)
     constraints_final = normalize_constraints(constraints_final, strict=debug)
+    _log_dt("normalize_constraints", _t() - t0)
 
     constraints_sorted = tuple(sorted(constraints_final, key=_constraint_sort_key))
     mentions_sorted = tuple(sorted(all_mentions, key=_mention_sort_key))
@@ -475,13 +495,13 @@ def interpret_nlp(
                 "evidence": getattr(c, "evidence", None),
                 "meta": {
                     **(getattr(c, "meta", None) or {}),
-                    "axis_family_effective": (getattr(c, "meta", None) or {}).get(
-                        "axis_family_effective"
-                    ),
+                    "axis_family_effective": (getattr(c, "meta", None) or {}).get("axis_family_effective"),
                 },
             }
             for c in constraints_sorted
         ]
+
+    _log_dt("interpret_nlp_total", _t() - t_all)
 
     return NLPResult(
         text=text,
@@ -499,17 +519,16 @@ def interpret_preference_text(
     spacy_model: str = "en_core_web_sm",
     clause_config: Optional[ClauseSplitConfig] = None,
     include_xkcd: bool = True,
+    polarity_backend: Optional[str] = None,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Does: parse free text into structured preference signals.
-    Runs NLP parsing, mention extraction, polarity, and constraint detection.
-    Returns: intermediate NLP interpretation object.
-    """
+    """Does: Parse free text into JSONable structured NLP signals."""
     res = interpret_nlp(
         text,
         spacy_model=spacy_model,
         clause_config=clause_config,
         include_xkcd=include_xkcd,
+        polarity_backend=polarity_backend,
         debug=debug,
     )
     return {
@@ -528,16 +547,16 @@ def build_preference_from_text(
     spacy_model: str = "en_core_web_sm",
     clause_config: Optional[ClauseSplitConfig] = None,
     include_xkcd: bool = True,
+    polarity_backend: Optional[str] = None,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Does: end-to-end helper to build preferences directly from text.
-    Combines interpretation and normalization steps.
-    """
+    """Does: End-to-end helper (interpret -> resolve preference)."""
     nlp_res = interpret_nlp(
         text,
         spacy_model=spacy_model,
         clause_config=clause_config,
         include_xkcd=include_xkcd,
+        polarity_backend=polarity_backend,
         debug=debug,
     )
     return build_preference_from_nlp(nlp_res)

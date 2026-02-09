@@ -21,10 +21,6 @@ import streamlit as st
 # -----------------------------
 st.set_page_config(page_title="Playground", layout="wide", initial_sidebar_state="collapsed")
 
-# ---------------------------------------------------------------------
-# Debug: prove which file is running (keep while debugging)
-# ---------------------------------------------------------------------
-
 # Fix noisy Streamlit+torch watcher crash (log spam / occasional UI weirdness)
 try:
     st.set_option("server.fileWatcherType", "none")
@@ -39,6 +35,30 @@ SRC = ROOT / "src"
 if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+# -----------------------------
+# App-level perf switches (NO hard-coded behavior inside src/)
+# -----------------------------
+def _env_bool(key: str, default: bool = False) -> bool:
+    v = os.environ.get(key, "1" if default else "0")
+    return str(v).strip().lower() in {"1", "true", "yes"}
+
+
+def _env_int(key: str, default: int) -> int:
+    v = os.environ.get(key, "")
+    try:
+        x = int(str(v).strip())
+        return x
+    except Exception:
+        return int(default)
+
+
+# Perf: in Streamlit UI, DO NOT warmup semantic embeddings (too slow).
+os.environ.setdefault("SA_WARMUP_SEMANTIC", "0")
+
+# Perf: in Streamlit UI, DO NOT use XKCD/CSS alias expansion unless explicitly enabled.
+# This removes the need for monkeypatching reco/interpretation code.
+os.environ.setdefault("SA_INCLUDE_XKCD", "0")
+
 from ui.bootstrap import warmup_nlp_stack  # ✅ single source of truth
 from ui.nav import top_nav
 from ui.theme import inject_styles
@@ -48,6 +68,14 @@ from ui.theme import inject_styles
 # -----------------------------
 ACCENT = "#7A2E2E"
 ACCENT_SOFT = "rgba(122, 46, 46, 0.12)"
+
+# -----------------------------
+# UI knobs (env-configurable; avoids hard-coded behavior)
+# -----------------------------
+GRID_COLS = max(1, _env_int("SA_PLAYGROUND_GRID_COLS", 3))
+DEFAULT_SHOW_N = _env_int("SA_PLAYGROUND_SHOW_N_DEFAULT", 3)
+SHOW_N_OPTIONS = [3, 6]  # keep stable UI; change via code if needed
+SHOW_WARMUP_HINT = _env_bool("SA_PLAYGROUND_SHOW_WARMUP_HINT", False)
 
 inject_styles()
 top_nav(active="Playground")
@@ -82,6 +110,35 @@ def _show_inline_loader(msg: str) -> Any:
         unsafe_allow_html=True,
     )
     return ph
+
+
+# -----------------------------
+# Perf: warmup once per session (cached)
+# -----------------------------
+@st.cache_resource(show_spinner=False)
+def _warmup_once() -> bool:
+    return bool(warmup_nlp_stack())
+
+
+# -----------------------------
+# Perf: world alias index (build once), NO LLM imports
+# NOTE: This can still be expensive depending on implementation; do not build unless needed.
+# -----------------------------
+@st.cache_resource(show_spinner=False)
+def _world_alias_index() -> dict[str, Any]:
+    try:
+        from Shopping_assistant.nlp.resources.world_alias_index import build_world_alias_index  # type: ignore
+
+        idx = build_world_alias_index(include_xkcd=False)
+        return idx if isinstance(idx, dict) else {}
+    except Exception:
+        try:
+            from Shopping_assistant.nlp.runtime.world_aliases import build_world_alias_index  # type: ignore
+
+            idx = build_world_alias_index(include_xkcd=False)
+            return idx if isinstance(idx, dict) else {}
+        except Exception:
+            return {}
 
 
 _ID_FLOAT_RE = re.compile(r"^\s*(\d+)\.0\s*$")
@@ -419,7 +476,17 @@ def _assets() -> Any:
     calib = os.environ.get("SA_CALIBRATION_JSON_PATH")
 
     if enriched and calib:
-        return load_assets(enriched_csv=Path(enriched), calibration_json=Path(calib))
+        assets = load_assets(enriched_csv=Path(enriched), calibration_json=Path(calib))
+
+        # Perf: pre-attach naming probs once (avoid per-query merge inside recommend).
+        try:
+            from Shopping_assistant.reco._naming_probs import _attach_naming_probs  # type: ignore
+
+            assets.inventory = _attach_naming_probs(assets.inventory)
+        except Exception:
+            pass
+
+        return assets
 
     raise FileNotFoundError(
         "Missing assets. Provide either:\n"
@@ -489,8 +556,6 @@ def _canon_text(s: str) -> str:
     return " ".join(s.split())
 
 
-# Prefer formats your stack can always render.
-# AVIF may exist in cache but often fails to decode/inline; keep it last.
 EXTS_PREFERRED = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
@@ -531,8 +596,6 @@ def _file_to_data_uri(path: Path, *, max_side_px: int = 1200, jpeg_quality: int 
         enc = base64.b64encode(b).decode("ascii")
         return f"data:image/jpeg;base64,{enc}"
     except Exception:
-        # If PIL can't decode (common for AVIF without plugins), return raw bytes with mime.
-        # Many browsers/streamlit combos won't display data:image/avif;base64 -> caller should avoid AVIF.
         b = path.read_bytes()
         enc = base64.b64encode(b).decode("ascii")
         return f"data:{mime};base64,{enc}"
@@ -654,12 +717,7 @@ def _load_local_image_maps() -> tuple[
             if sh:
                 shade_all.append((sh, p_img))
 
-    # Robust scan: recurse + accept multiple filename conventions.
-    #  - strict: {pid}__{sid}.{ext}
-    #  - loose:  {pid}_{sid}.{ext}, {pid}-{sid}.{ext}, {pid}--{sid}.{ext} (also in subfolders)
-    _ID_PAIR_RE = re.compile(
-        r"(?i)(?:^|[/\\])(?P<pid>P?\d+)[_\-]{1,2}(?P<sid>\d+)\.(?P<ext>[a-z0-9]+)$"
-    )
+    _ID_PAIR_RE = re.compile(r"(?i)(?:^|[/\\])(?P<pid>P?\d+)[_\-]{1,2}(?P<sid>\d+)\.(?P<ext>[a-z0-9]+)$")
 
     if out_dir.exists():
         for p in out_dir.rglob("*"):
@@ -768,11 +826,13 @@ def _pick_local_image_data_uri_any(
     return None
 
 
-def _explain_from_resolved(text: str) -> dict[str, Any]:
+@st.cache_data(show_spinner=False)
+def _explain_cached(text: str) -> dict[str, Any]:
+    # NOTE: prefer non-interpretation import path; we also disable XKCD via env+arg.
     from Shopping_assistant.nlp.interpretation.preference import interpret_nlp  # type: ignore
     from Shopping_assistant.nlp.resolve.preference_resolver import resolve_preference  # type: ignore
 
-    nlp_res = interpret_nlp(text, debug=False)
+    nlp_res = interpret_nlp(text, include_xkcd=False, debug=False)
     resolved = resolve_preference(nlp_res)
 
     likes: list[str] = []
@@ -814,27 +874,15 @@ def _explain_from_resolved(text: str) -> dict[str, Any]:
 
     target_hue: Optional[float] = None
     target_color: Optional[str] = None
-
     if likes_u:
-        cand = likes_u[0].strip().lower()
-        target_color = cand
-        try:
-            from Shopping_assistant.nlp.llm.analyze_clauses import build_world_alias_index  # type: ignore
-
-            idx = build_world_alias_index(include_xkcd=True)
-            info = idx.get(cand) if isinstance(idx, dict) else None
-            hx = info.get("hex") if isinstance(info, dict) else None
-            if isinstance(hx, str) and hx:
-                target_hue = _hex_to_hue_deg(hx)
-        except Exception:
-            target_hue = None
+        target_color = likes_u[0].strip().lower()
 
     return {
         "likes": likes_u,
         "dislikes": dislikes_u,
         "constraints": constraints_u,
         "target_color": target_color,
-        "target_hue": target_hue,
+        "target_hue": target_hue,  # populated lazily when building chips
     }
 
 
@@ -845,6 +893,12 @@ def _recommend(text: str, *, assets: Any, topk: int = 64) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame):
         raise TypeError("recommend_from_text() must return a pandas.DataFrame.")
     return df
+
+
+@st.cache_data(show_spinner=False)
+def _recommend_cached(text: str, topk: int) -> pd.DataFrame:
+    assets = _assets()
+    return _recommend(text, assets=assets, topk=topk)
 
 
 def _chip(dot_color: Optional[str], label: str) -> str:
@@ -861,12 +915,40 @@ def _pill_top_match() -> str:
     return '<div class="pill"><span class="dot"></span><span>Top match</span></div>'
 
 
+def _ensure_target_hue(expl: dict[str, Any]) -> Optional[float]:
+    """
+    Does:
+        Compute target_hue only if needed (avoids building world index on every query).
+    """
+    if not isinstance(expl, dict):
+        return None
+    if isinstance(expl.get("target_hue"), float):
+        return float(expl["target_hue"])
+
+    target_color = expl.get("target_color")
+    if not isinstance(target_color, str) or not target_color.strip():
+        return None
+
+    try:
+        idx = _world_alias_index()
+        info = idx.get(target_color.strip().lower()) if isinstance(idx, dict) else None
+        hx = info.get("hex") if isinstance(info, dict) else None
+        if isinstance(hx, str) and hx:
+            h = _hex_to_hue_deg(hx)
+            expl["target_hue"] = h
+            return h
+    except Exception:
+        return None
+    return None
+
+
 def _build_rationale_chips(row: pd.Series, *, top: pd.DataFrame, expl: dict[str, Any]) -> list[str]:
     chips: list[str] = []
 
     hx = _pick_hex(row)
     hue = _hex_to_hue_deg(hx) if hx else None
-    target_hue = expl.get("target_hue")
+
+    target_hue = _ensure_target_hue(expl) if hue is not None else None
     if hue is not None and isinstance(target_hue, float):
         ad = abs(_angle_diff_deg(hue, target_hue))
         chips.append(_chip(hx or None, f"Hue Δ{ad:.0f}°"))
@@ -931,15 +1013,15 @@ st.markdown(
 )
 
 if "show_n" not in st.session_state:
-    st.session_state["show_n"] = 3
+    st.session_state["show_n"] = DEFAULT_SHOW_N if DEFAULT_SHOW_N in SHOW_N_OPTIONS else SHOW_N_OPTIONS[0]
 
 c_opt, _ = st.columns([1, 3], gap="large")
 with c_opt:
     _ = st.radio(
         "Top Results",
-        options=[3, 6],
+        options=SHOW_N_OPTIONS,
         horizontal=True,
-        index=0 if st.session_state["show_n"] == 3 else 1,
+        index=SHOW_N_OPTIONS.index(st.session_state["show_n"]) if st.session_state["show_n"] in SHOW_N_OPTIONS else 0,
         key="show_n",
     )
 
@@ -962,25 +1044,32 @@ if submitted:
         st.warning("Please enter a short description.")
         st.stop()
 
-    loader = _show_inline_loader("Loading engine…")
+    # Warmup (resource cache)
+    loader = _show_inline_loader("Starting engine (first query only)…")
     try:
-        warmup_nlp_stack()
+        _ = _warmup_once()
     finally:
         loader.empty()
 
-    st.caption("Curated selection. Always shown as a 3-column grid.")
+    if SHOW_WARMUP_HINT:
+        st.caption(f"grid_cols={GRID_COLS} | include_xkcd={os.environ.get('SA_INCLUDE_XKCD', '')}")
 
-    assets = _assets()
+    # Local image maps
     out_dir, id_map, name_map, name2_map, shade_u_map = _load_local_image_maps()
 
-
+    # Explain
     loader = _show_inline_loader("Understanding your request…")
-    expl = _explain_from_resolved(text)
-    loader.empty()
+    try:
+        expl = _explain_cached(text)
+    finally:
+        loader.empty()
 
+    # Recommend
     loader = _show_inline_loader("Finding the best shades…")
-    top = _recommend(text, assets=assets, topk=64)
-    loader.empty()
+    try:
+        top = _recommend_cached(text, 64)
+    finally:
+        loader.empty()
 
     if top.empty:
         st.warning("No results found.")
@@ -989,6 +1078,7 @@ if submitted:
     items: list[dict[str, Any]] = []
     missing_local = 0
 
+    limit_n = int(st.session_state["show_n"])
     for i in range(len(top)):
         row = top.iloc[i]
         img_local = _pick_local_image_data_uri_any(
@@ -999,8 +1089,6 @@ if submitted:
             shade_u_map=shade_u_map,
         )
 
-        # Fallback: swatch from chip_hex if local image is missing OR if the local image is unusable.
-        # (Still possible if selected format is AVIF and the browser can't display it.)
         if not img_local:
             missing_local += 1
             hx = _pick_hex(row)
@@ -1023,20 +1111,19 @@ if submitted:
             }
         )
 
-        if len(items) >= int(st.session_state["show_n"]):
+        if len(items) >= limit_n:
             break
 
     if missing_local > 0:
         st.caption(
-            f"local_images_missing={missing_local} | cache_dir='{out_dir}' | "
-            f"showing swatch placeholders when needed"
+            f"local_images_missing={missing_local} | cache_dir='{out_dir}' | showing swatch placeholders when needed"
         )
 
     st.markdown('<div class="section-title">Matches</div>', unsafe_allow_html=True)
 
-    cols = st.columns(3, gap="large")
+    cols = st.columns(GRID_COLS, gap="large")
     for idx, it in enumerate(items):
-        with cols[idx % 3]:
+        with cols[idx % GRID_COLS]:
             _render_card_html(
                 is_top=(idx == 0),
                 brand=it["brand"],

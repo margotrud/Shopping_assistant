@@ -4,29 +4,17 @@ from __future__ import annotations
 """
 Polarity classification for mentions (LIKE / DISLIKE / UNKNOWN).
 
-Design (portfolio / offline):
-- No paid APIs.
-- No lexical trigger rules.
-- Semantic inference implemented via SentenceTransformer embeddings.
+Backends:
+- lexical: fast, deterministic (Streamlit default via SA_POLARITY_BACKEND=lexical)
+- semantic: SentenceTransformer embeddings (offline default)
 
-Contracts:
-
-1) Polarity backend (callback):
-    polarity_fn(clause_text, mentions) -> {mention: "LIKE"|"DISLIKE"|None}
-
-2) This module:
-- normalizes returned labels,
-- applies optional clause-level fallback sentiment,
-- applies optional structural bias for elliptical fragments,
-- provides a deterministic clause-level polarity decision,
-- provides enum-typed outputs (Shopping_assistant.nlp.schema.Polarity).
-
-Important:
-- numpy and sentence_transformers are OPTIONAL dependencies and are only required
-  when calling make_free_polarity_fn(). The core inference path must remain import-safe.
+Import-safety:
+- numpy / torch / sentence_transformers are imported lazily and only when using semantic backend.
 """
 
 import logging
+import os
+import re
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -41,9 +29,8 @@ log = logging.getLogger(__name__)
 
 
 class PolarityLLM(Protocol):
-    """Does: optional LLM-backed polarity helper for ambiguous clauses/mentions.
-    Provides: a callable interface used by polarity inference when enabled.
-    """
+    """Does: polarity helper for clauses/mentions (backend-agnostic)."""
+
     def __call__(self, clause_text: str, mentions: List[str]) -> Dict[str, Optional[str]]:
         """
         Expected return format:
@@ -87,6 +74,18 @@ def _dedup_preserve_order(items: List[str]) -> List[str]:
     return out
 
 
+def _env_csv(key: str) -> List[str]:
+    v = os.environ.get(key, "").strip()
+    if not v:
+        return []
+    return [x.strip().lower() for x in v.split(",") if x.strip()]
+
+
+def _env_choice(key: str, default: str) -> str:
+    v = os.environ.get(key, "").strip().lower()
+    return v or default.strip().lower()
+
+
 def _l2_normalize_rows(np: Any, X: Any, *, eps: float = 1e-12) -> Any:
     """
     Does:
@@ -101,7 +100,6 @@ def _l2_normalize_rows(np: Any, X: Any, *, eps: float = 1e-12) -> Any:
 def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str, torch: Any) -> Any:
     device = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
 
-    # 1) Chemin robuste: construire les modules ST explicitement
     try:
         from sentence_transformers import models  # type: ignore
 
@@ -118,7 +116,6 @@ def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str
         )
         model = SentenceTransformer(modules=[word, pooling], device=device)
     except Exception:
-        # 2) Fallback: constructeur classique
         try:
             model = SentenceTransformer(
                 model_name,
@@ -135,6 +132,7 @@ def _load_sentence_transformer_safe(*, SentenceTransformer: Any, model_name: str
 
     return model
 
+
 # ---------------------------------------------------------------------------
 # Clause-level polarity decision
 # ---------------------------------------------------------------------------
@@ -148,23 +146,18 @@ def decide_clause_polarity(
 ) -> Polarity:
     """
     Does:
-        Decide a clause-level polarity from mention-level labels + optional clause sentiment,
-        with a deterministic fallback for elliptical negative fragments.
+        Decide a clause-level polarity from mention labels + optional sentiment + structural bias.
     """
     if mention_labels:
         vals = [_label_to_enum(v) for v in mention_labels.values() if v is not None]
         has_like = any(v == Polarity.LIKE for v in vals)
         has_dislike = any(v == Polarity.DISLIKE for v in vals)
 
-        # If only one side appears, it's the clause polarity.
         if has_like and not has_dislike:
             return Polarity.LIKE
         if has_dislike and not has_like:
             return Polarity.DISLIKE
 
-        # Mixed / ambiguous -> fall through.
-
-    # Clause sentiment fallback if provided (POS/NEG only)
     if isinstance(clause_sentiment, str):
         s = clause_sentiment.strip().upper()
         if s == "POS":
@@ -172,7 +165,6 @@ def decide_clause_polarity(
         if s == "NEG":
             return Polarity.DISLIKE
 
-    # Structural bias: elliptical neg fragments are treated as DISLIKE if still undecided
     if elliptical_neg:
         return Polarity.DISLIKE
 
@@ -194,10 +186,7 @@ def infer_polarity_for_mentions(
 ) -> Dict[str, Optional[str]]:
     """
     Does:
-        Run a backend polarity function and normalize/patch its outputs.
-
-    Returns:
-        Mapping mention -> "LIKE"|"DISLIKE"|None
+        Run backend polarity fn and normalize outputs; adds sentiment + structural fallbacks.
     """
     if not mentions:
         return {}
@@ -227,11 +216,9 @@ def infer_polarity_for_mentions(
         v_raw = raw_by_key.get(_canon_key(m))
         label = _norm_label(v_raw)
 
-        # Optional clause-level sentiment fallback if backend returns None
         if label is None and sent is not None:
             label = "LIKE" if sent == "POS" else "DISLIKE"
 
-        # Structural bias: elliptical fragments default to DISLIKE if still None
         if elliptical_neg and label is None:
             label = "DISLIKE"
 
@@ -250,10 +237,7 @@ def infer_polarity_for_mentions_enum(
 ) -> Dict[str, Polarity]:
     """
     Does:
-        Same as infer_polarity_for_mentions(), but returns enum-typed polarities.
-
-    Returns:
-        Mapping mention -> Polarity (LIKE/DISLIKE/UNKNOWN)
+        Same as infer_polarity_for_mentions(), returning enum-typed polarities.
     """
     raw = infer_polarity_for_mentions(
         clause_text,
@@ -266,7 +250,75 @@ def infer_polarity_for_mentions_enum(
 
 
 # ---------------------------------------------------------------------------
-# Offline polarity backend (SentenceTransformer)
+# Fast lexical backend (no torch / no embeddings)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=8)
+def make_lexical_polarity_fn(*, debug: bool = False) -> PolarityLLM:
+    """
+    Does:
+        Build a cheap polarity function using negation + intent triggers (env-overridable).
+    """
+    # Minimal defaults; extend via env to avoid code edits.
+    pos_trig = _env_csv("SA_POLARITY_POS_TRIGGERS") or [
+        "want",
+        "like",
+        "love",
+        "prefer",
+        "looking for",
+        "need",
+        "give me",
+    ]
+    neg_trig = _env_csv("SA_POLARITY_NEG_TRIGGERS") or [
+        "not",
+        "don't",
+        "dont",
+        "avoid",
+        "without",
+        "no",
+        "exclude",
+    ]
+
+    # Phrase-first matching (longer first) with soft boundaries.
+    def _compile(xs: List[str]) -> List[re.Pattern]:
+        pats: List[re.Pattern] = []
+        for x in sorted({s.strip().lower() for s in xs if s and s.strip()}, key=len, reverse=True):
+            esc = re.escape(x)
+            pats.append(re.compile(rf"(?i)(?:^|[\s,.;:!?()]){esc}(?:$|[\s,.;:!?()])"))
+        return pats
+
+    POS = _compile(pos_trig)
+    NEG = _compile(neg_trig)
+
+    def _has_any(pats: List[re.Pattern], t: str) -> bool:
+        return any(p.search(t) for p in pats)
+
+    def _fn(clause_text: str, mentions: List[str]) -> Dict[str, Optional[str]]:
+        if not mentions:
+            return {}
+
+        t = f" {clause_text.strip()} "
+        neg = _has_any(NEG, t)
+        pos = _has_any(POS, t)
+
+        if neg and not pos:
+            lab: Optional[str] = "DISLIKE"
+        elif pos and not neg:
+            lab = "LIKE"
+        else:
+            lab = None
+
+        if debug:
+            log.debug("[polarity][lex] pos=%s neg=%s -> %s text=%r", pos, neg, lab, clause_text)
+
+        return {m: lab for m in mentions}
+
+    return _fn
+
+
+# ---------------------------------------------------------------------------
+# Offline semantic backend (SentenceTransformer)
 # ---------------------------------------------------------------------------
 
 
@@ -279,29 +331,19 @@ def make_free_polarity_fn(
     debug: bool = False,
 ) -> PolarityLLM:
     """
-    Offline polarity:
-      - encodes INCLUDE vs EXCLUDE prompts per mention
-      - compares to anchors ("include items" / "exclude items")
-      - returns None for ambiguous cases based on (min_sim, min_margin)
-
-    Optional deps are imported lazily to keep module import-safe.
-
-    Notes:
-      - We DO NOT rely on SentenceTransformer.encode(normalize_embeddings=...)
-        for forward-compat across versions; we normalize with numpy explicitly.
+    Does:
+        Semantic polarity via embeddings; returns None when ambiguous (min_sim/min_margin).
     """
     np = require(
         "numpy",
         extra="numpy",
         purpose="Needed for make_free_polarity_fn() to build dense embedding arrays and normalize them.",
     )
-
     torch = require(
         "torch",
         extra="torch",
         purpose="Needed for make_free_polarity_fn() to select device and avoid meta-tensor loading.",
     )
-
     st = require(
         "sentence_transformers",
         extra="sentence-transformers",
@@ -309,14 +351,9 @@ def make_free_polarity_fn(
     )
     SentenceTransformer = st.SentenceTransformer  # type: ignore[attr-defined]
 
-    min_sim_f = float(min_sim)
-    min_margin_f = float(min_margin)
-    if min_sim_f < 0.0:
-        min_sim_f = 0.0
-    if min_margin_f < 0.0:
-        min_margin_f = 0.0
+    min_sim_f = max(0.0, float(min_sim))
+    min_margin_f = max(0.0, float(min_margin))
 
-    # ✅ FIX: safe loading (prevents meta-tensor crash)
     encoder = _load_sentence_transformer_safe(
         SentenceTransformer=SentenceTransformer,
         model_name=model_name,
@@ -409,10 +446,35 @@ def make_free_polarity_fn(
                         clause_text,
                     )
 
-        # Preserve original mentions list (including duplicates) in output keys
         return {m: out_u.get(m) for m in mentions}
 
     return _fn
+
+
+# ---------------------------------------------------------------------------
+# Backend dispatcher
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=8)
+def make_polarity_fn(
+    *,
+    backend: Optional[str] = None,
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    min_sim: float = 0.30,
+    min_margin: float = 0.10,
+    debug: bool = False,
+) -> PolarityLLM:
+    """
+    Does:
+        Return a polarity backend. backend is read from SA_POLARITY_BACKEND when None.
+    """
+    b = (backend or _env_choice("SA_POLARITY_BACKEND", "semantic")).strip().lower()
+    if b in {"lex", "lexical", "rules"}:
+        return make_lexical_polarity_fn(debug=debug)
+    if b in {"free", "semantic", "st", "sentence-transformer"}:
+        return make_free_polarity_fn(model_name=model_name, min_sim=min_sim, min_margin=min_margin, debug=debug)
+    raise ValueError(f"Unknown polarity backend: {b!r} (expected: lexical|semantic)")
 
 
 __all__ = [
@@ -420,5 +482,7 @@ __all__ = [
     "infer_polarity_for_mentions",
     "infer_polarity_for_mentions_enum",
     "decide_clause_polarity",
+    "make_lexical_polarity_fn",
     "make_free_polarity_fn",
+    "make_polarity_fn",
 ]
