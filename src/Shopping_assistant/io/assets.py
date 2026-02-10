@@ -1,8 +1,7 @@
 # src/Shopping_assistant/io/assets.py
 """Runtime asset loading and bundling.
 
-Does: Loads versioned JSON assets (lexicon, anchors, scoring configs/calibration, weights) and exposes them as a
-single AssetBundle consumed by NLP and recommendation layers.
+Does: Loads runtime assets (inventory CSV + calibration JSON) and exposes them as a single AssetBundle.
 Public API: AssetBundle, load_default_assets(), and any load_* helpers referenced outside this module.
 Inputs: optional explicit paths (env or args); defaults to repo-local data/ paths when unspecified.
 Outputs: validated AssetBundle with parsed structures ready for fast repeated inference.
@@ -19,31 +18,29 @@ import os
 
 import pandas as pd
 
-from Shopping_assistant.io.data_schema import (
-    validate_inventory,
-    validate_calibration,
-)
+from Shopping_assistant.io.data_schema import validate_calibration, validate_inventory
 
+
+def _project_root() -> Path:
+    # .../src/Shopping_assistant/io/assets.py -> parents[3] = pythonProject/
+    return Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
 class AssetBundle:
-    """Does: container for runtime assets used by NLP + scoring + recommender.
-    Contains: inventory DataFrame, lexicon/anchors, calibration dict, optional preference weights.
-    Used by: recommend_from_text() and related debug helpers.
+    """Does: container for runtime assets used by scoring + recommender.
+    Contains: inventory DataFrame, calibration dict.
+    Used by: recommend_from_text() and debug helpers.
     """
+
     inventory: pd.DataFrame
     calibration: dict
 
 
-def load_assets(
-    *,
-    enriched_csv: Path,
-    calibration_json: Path,
-) -> AssetBundle:
-    """Does: load runtime assets (inventory + JSON configs) from a root directory.
-    Inputs: paths for inventory/enriched CSV and model JSONs; validates schema where relevant.
-    Returns: AssetBundle ready to be passed into recommend_from_text().
+def load_assets(*, enriched_csv: Path, calibration_json: Path) -> AssetBundle:
+    """Does: load runtime assets from explicit file paths.
+    Inputs: enriched/inventory CSV path and calibration JSON path.
+    Returns: validated AssetBundle.
     """
     inventory = pd.read_csv(enriched_csv)
     calibration = json.loads(calibration_json.read_text(encoding="utf-8"))
@@ -51,13 +48,7 @@ def load_assets(
     validate_calibration(calibration)
     validate_inventory(inventory)
 
-    return AssetBundle(
-        inventory=inventory,
-        calibration=calibration,
-    )
-
-
-# --- Default assets loading (env-first, strict discovery fallback) ---
+    return AssetBundle(inventory=inventory, calibration=calibration)
 
 
 def _env_path(key: str) -> Path | None:
@@ -66,52 +57,48 @@ def _env_path(key: str) -> Path | None:
 
 
 def _find_one(root: Path, patterns: list[str], *, label: str) -> Path:
+    """Does: locate exactly one file matching patterns under root (recursive, deduped).
+    Inputs: root directory and glob patterns (e.g. '*enriched*.csv').
+    Returns: unique matching Path.
+    """
     hits: list[Path] = []
     for pat in patterns:
-        hits.extend(sorted(root.glob(pat)))
-    hits = [p for p in hits if p.is_file()]
+        hits.extend(root.rglob(pat))
 
-    if len(hits) == 1:
-        return hits[0]
-    if len(hits) == 0:
+    # Deduplicate across overlapping patterns
+    uniq = sorted({p.resolve() for p in hits if p.is_file()})
+
+    if len(uniq) == 1:
+        return uniq[0]
+    if len(uniq) == 0:
         raise FileNotFoundError(
             f"Cannot locate {label} under {root}. "
-            f"Tried patterns={patterns}. "
+            f"Tried patterns={patterns} (recursive). "
             f"Either set env var SA_{label.upper()}_PATH or place exactly one matching file."
         )
     raise FileExistsError(
-        f"Ambiguous {label} under {root}: {hits}. "
+        f"Ambiguous {label} under {root}: {uniq}. "
         f"Keep exactly one matching file or set env var SA_{label.upper()}_PATH."
     )
 
 
 @lru_cache(maxsize=1)
 def load_default_assets(*, root: Path | None = None) -> AssetBundle:
+    """Does: load inventory CSV + calibration JSON (env-first; otherwise repo-local discovery).
+    Inputs: optional root; env overrides SA_ENRICHED_CSV_PATH / SA_CALIBRATION_JSON_PATH / SA_ASSETS_ROOT.
+    Returns: AssetBundle with validated inventory + calibration.
     """
-    Load the default AssetBundle used by the recommendation pipeline.
-
-    Does: load inventory CSV and calibration JSON from explicit env paths
-    (SA_ENRICHED_CSV_PATH, SA_CALIBRATION_JSON_PATH) if set; otherwise
-    discover assets under the given root (default: ./data).
-    Returns: AssetBundle with inventory (DataFrame) and calibration config (dict).
-    """
-
     enriched = _env_path("SA_ENRICHED_CSV_PATH")
     calibration = _env_path("SA_CALIBRATION_JSON_PATH")
 
-    if all([enriched, calibration]):
-        return load_assets(
-            enriched_csv=enriched,
-            calibration_json=calibration,
-        )
+    if enriched and calibration:
+        return load_assets(enriched_csv=enriched, calibration_json=calibration)
 
     if root is None:
-        root = Path(os.environ.get("SA_ASSETS_ROOT", "data")).resolve()
+        default_root = _project_root() / "data"
+        root = Path(os.environ.get("SA_ASSETS_ROOT", str(default_root))).resolve()
 
     enriched = enriched or _find_one(root, ["*enriched*.csv", "*inventory*.csv", "*enriched.csv"], label="enriched_csv")
     calibration = calibration or _find_one(root, ["*calibration*.json"], label="calibration_json")
 
-    return load_assets(
-        enriched_csv=enriched,
-        calibration_json=calibration,
-    )
+    return load_assets(enriched_csv=enriched, calibration_json=calibration)

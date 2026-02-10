@@ -8,8 +8,8 @@ import streamlit as st
 _ROUTES = [
     ("Home", "/"),
     ("Playground", "/Playground"),
-    ("Shade Lab", "/Shade_Lab"),
-    ("Model Card", "/Model_Card"),
+    ("Explain", "/Explain_Recommendation"),
+    ("Model", "Model_Evaluation"),
 ]
 
 

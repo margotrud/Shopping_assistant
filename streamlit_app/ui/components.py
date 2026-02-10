@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import streamlit as st
 import pandas as pd
-
+import html
 
 @dataclass(frozen=True, slots=True)
 class InventoryStats:
@@ -146,13 +146,12 @@ def render_product_card(
 
 
 def render_chip_row(items: list[str]) -> None:
-    """
-    Does:
+    """Does:
         Render a row of small chips for extracted intents/constraints.
     """
-    chips = "".join([f'<div class="chip">{st._utils.escape_markdown(x)}</div>' for x in items])  # type: ignore[attr-defined]
+    safe = [html.escape(str(x)) for x in items]
+    chips = "".join([f'<div class="chip">{x}</div>' for x in safe])
     st.markdown(f'<div class="chip-row">{chips}</div>', unsafe_allow_html=True)
-
 
 def load_inventory_df_cached() -> Optional[pd.DataFrame]:
     """

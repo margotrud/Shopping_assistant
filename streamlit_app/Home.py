@@ -1,16 +1,16 @@
 # streamlit_app/Home.py
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, Dict
 import base64
 import mimetypes
+from pathlib import Path
+from typing import Dict, Optional
 
 import streamlit as st
 
-from ui.theme import inject_styles
-from ui.nav import top_nav
 from ui.bootstrap import warmup_nlp_stack  # centralized warmup (cached)
+from ui.nav import top_nav
+from ui.theme import inject_styles
 
 st.set_page_config(
     page_title="Lipstick Recommender",
@@ -31,16 +31,15 @@ def _load_counts() -> Dict[str, Optional[int]]:
     return {"products": None, "shades": None, "families": None}
 
 
-counts = _load_counts()
-has_counts = all(v is not None for v in counts.values())
-
 # -----------------------------
-# Routes
+# Routes (keep aligned with ui/nav.py)
 # -----------------------------
 PLAYGROUND = "Playground"
-SHADE_LAB = "Shade_Lab"
-MODEL_CARD = "Model_Card"
+EXPLAIN = "Explain"
+MODEL = "Model"
 
+counts = _load_counts()
+has_counts = all(v is not None for v in counts.values())
 
 # -----------------------------
 # Assets
@@ -92,7 +91,7 @@ def _chip(title: str, body: str, href_page: str, cta: str) -> str:
 hero_data_uri = _img_data_uri(hero_img)
 
 # -----------------------------
-# CSS
+# Local CSS (Home-only accents)
 # -----------------------------
 st.markdown(
     """
@@ -152,7 +151,7 @@ section.hero{
 .hero-left .p{
   margin: 0 0 14px 0;
   line-height: 1.65;
-  margin-bottom: 18px
+  margin-bottom: 18px;
 }
 
 /* CTA zone */
@@ -198,7 +197,7 @@ section.hero{
   transform: translateY(6px);
 }
 
-/* CTA */
+/* Primary CTA */
 a.btn.primary{
   background: var(--accent) !important;
   color: #fff !important;
@@ -221,7 +220,7 @@ a.btn.primary:hover{
   border-color: rgba(122, 46, 46, 0.22) !important;
 }
 
-
+/* Entry cards accents */
 .entry-cta{ color: var(--accent) !important; }
 
 .entry-grid a.entry-card:first-child{
@@ -255,7 +254,8 @@ if has_counts:
 cta_html = (
     '<div class="hero-ctas">'
     + _btn_page_link(PLAYGROUND, "▶ Enter Playground", primary=True)
-    + _btn_page_link(MODEL_CARD, "Model card")
+    + _btn_page_link(EXPLAIN, "Explain recommendations")
+    + _btn_page_link(MODEL, "Model & Evaluation")
     + "</div>"
 )
 
@@ -267,7 +267,6 @@ else:
 hero_lines = [
     '<section class="hero">',
     '<div class="hero-split">',
-
     '<div class="hero-left">',
     '<div class="kicker">A NEW WAY TO CHOOSE LIPSTICK.</div>',
     '<div class="h1">Find the shade that feels right.</div>',
@@ -281,9 +280,7 @@ hero_lines = [
     '<div class="home-guide-line"><span class="home-guide-step">3</span> <strong>Match</strong> shades with perceptual precision.</div>',
     "</div>",
     "</div>",
-
     media_html,
-
     "</div>",
     "</section>",
 ]
@@ -296,21 +293,21 @@ st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 # -----------------------------
 st.markdown('<div class="h2">Inside the system</div>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="p">A high-level overview of how preferences are interpreted and matched.</p>',
+    '<p class="p">A guided tour: test the engine, understand decisions, then review the system design.</p>',
     unsafe_allow_html=True,
 )
 
 entry_lines = [
     '<div class="entry-grid">',
     _chip("Playground", "Enter a natural language preference. Get ranked shades.", PLAYGROUND, "Start"),
-    _chip("Shade Lab", "Visual inspection of the color space used by the engine.", SHADE_LAB, "Inspect →"),
-    _chip("Model Card", "System guarantees, assumptions, limitations, and known failure modes.", MODEL_CARD, "Read"),
+    _chip("Explain", "See how the query is interpreted and why top results are selected.", EXPLAIN, "Explain"),
+    _chip("Model & Evaluation", "Architecture, scoring rationale, evaluation strategy, and limitations.", MODEL, "Read"),
     "</div>",
 ]
 st.markdown("\n".join(entry_lines), unsafe_allow_html=True)
 
 st.markdown(
-    '<p class="small-note">This page is intentionally non-technical. Detailed system behavior is documented in the Model Card.</p>',
+    '<p class="small-note">This page is intentionally non-technical. Detailed system behavior lives in Explain and Model & Evaluation.</p>',
     unsafe_allow_html=True,
 )
 
@@ -328,18 +325,18 @@ with st.expander("Engine", expanded=False):
         st.success("NLP stack ready.")
 
 # -----------------------------
-# Local CSS for cards/steps
+# Local CSS for cards/steps (fix: color, not colors)
 # -----------------------------
 st.markdown(
     """
 <style>
 .home-guide { display: grid; gap: 10px; max-width: 860px; }
-.home-guide-line { colors: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.home-guide-line { color: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 10px; }
 .home-guide-step {
   width: 22px; height: 22px; border-radius: 999px;
   border: 1px solid var(--border);
   display: inline-flex; align-items: center; justify-content: center;
-  colors: var(--ink); font-weight: 600; font-size: 12px;
+  color: var(--ink); font-weight: 600; font-size: 12px;
   background: rgba(255,255,255,0.55);
 }
 
@@ -363,8 +360,8 @@ st.markdown(
   box-shadow: 0 10px 28px rgba(19, 42, 99, 0.10);
   border-color: rgba(19, 42, 99, 0.22);
 }
-.entry-title { colors: var(--ink); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
-.entry-body { colors: var(--muted); font-size: 14px; line-height: 1.50; margin-bottom: 10px; }
+.entry-title { color: var(--ink); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+.entry-body { color: var(--muted); font-size: 14px; line-height: 1.50; margin-bottom: 10px; }
 .entry-cta { font-weight: 600; font-size: 13px; }
 
 @media (max-width: 1100px) {
