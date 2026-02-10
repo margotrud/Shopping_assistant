@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="assets/demo.png" width="900">
+</p>
 # Shopping Assistant — Color-Aware Recommendation from Natural Language
 
 This project is a research-grade, end-to-end recommendation system that converts free-text user
