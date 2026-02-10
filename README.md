@@ -4,13 +4,13 @@
 
 # Shopping Assistant — Color-Aware Recommendation from Natural Language
 
-This project is a research-grade, end-to-end recommendation system that converts free-text user
-preferences into ranked cosmetic shades using NLP, color science, and calibrated scoring.
-It is designed as a reproducible portfolio project, not a production service.
+This project is a color-aware recommendation system that focuses on the interpretation
+and ranking stages of cosmetic shade selection, starting from free-text user preferences.
 
-The system parses natural language constraints (e.g. brightness, saturation, exclusions),
-resolves color anchors in Lab space, builds adaptive candidate pools, and ranks products
-with deterministic, test-backed logic.
+It parses natural language constraints (e.g. brightness, warmth, exclusions), resolves
+color anchors in Lab space, builds adaptive candidate pools, and ranks products using
+fully deterministic, test-backed logic. The project is designed as a reproducible
+portfolio system, not a production or end-to-end service.
 
 ---
 
@@ -39,8 +39,10 @@ streamlit_app/             # Demo application
 ## Quickstart
 
 ```bash
+pip install -r requirements.txt
 pip install -e .
 pytest -q
+streamlit run streamlit_app/Home.py
 ```
 
 Optional demo:
