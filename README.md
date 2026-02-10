@@ -57,6 +57,15 @@ streamlit run streamlit_app/Home.py
 All runtime assets are versioned under `data/`.
 Scripts used to generate or validate these assets are documented in `Scripts/README.md`.
 
+### Dataset limitations
+
+The included dataset is a truncated subset of the original catalog.
+It is intended to make the application runnable and illustrate the
+interpretation and ranking logic, not to reflect final recommendation quality.
+
+As a result, some rankings or explanations may appear less accurate
+than in the full internal setup.
+
 ---
 
 ## Scope and intent
