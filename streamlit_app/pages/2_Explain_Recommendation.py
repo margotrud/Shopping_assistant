@@ -14,6 +14,12 @@ import streamlit as st
 # -----------------------------
 st.set_page_config(page_title="Explain", layout="wide", initial_sidebar_state="collapsed")
 
+# Public-demo disclaimer (reduced dataset)
+st.caption(
+    "Results shown here are based on a reduced public dataset and are meant for demonstration purposes "
+    "(rankings/explanations may differ from the full internal setup)."
+)
+
 try:
     st.set_option("server.fileWatcherType", "none")
 except Exception:
