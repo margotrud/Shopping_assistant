@@ -48,8 +48,7 @@ top_nav(active="Explain")
 # -----------------------------
 os.environ.setdefault("SA_WARMUP_SEMANTIC", "0")
 os.environ.setdefault("SA_INCLUDE_XKCD", "0")
-os.environ.setdefault("SA_POLARITY_BACKEND", "lexical")
-
+os.environ.setdefault("SA_POLARITY_BACKEND", "hybrid")
 from ui.bootstrap import warmup_nlp_stack  # noqa: E402
 from Shopping_assistant.reco.explain import explain_recommendation  # noqa: E402
 
