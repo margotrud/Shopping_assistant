@@ -216,7 +216,7 @@ def explain_recommendation(
     pool_cap = int(min(pool_cap, int(_MAX_POOL_TOPN)))
 
     include_xkcd = _env_bool("SA_INCLUDE_XKCD", True)
-    polarity_backend = os.environ.get("SA_POLARITY_BACKEND", "lexical")
+    polarity_backend = os.environ.get("SA_POLARITY_BACKEND", "hybrid")
     nlp_res = interpret_nlp(
         text,
         include_xkcd=include_xkcd,

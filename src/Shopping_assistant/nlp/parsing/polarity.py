@@ -1,15 +1,17 @@
-# src/Shopping_assistant/nlp/polarity.py
-from __future__ import annotations
+# src/Shopping_assistant/nlp/parsing/polarity.py
+# from __future__ import annotations
 
 """
 Polarity classification for mentions (LIKE / DISLIKE / UNKNOWN).
 
 Backends:
-- lexical: fast, deterministic (Streamlit default via SA_POLARITY_BACKEND=lexical)
-- semantic: SentenceTransformer embeddings (offline default)
+- lexical: fast, deterministic rule-based polarity
+- semantic: SentenceTransformer-based polarity classifier and library default
+- hybrid: lexical -> NLI -> controlled local generative fallback
 
 Import-safety:
-- numpy / torch / sentence_transformers are imported lazily and only when using semantic backend.
+- numpy / torch / sentence_transformers are imported lazily for semantic inference.
+- transformers is loaded only if the local generative fallback is reached.
 """
 
 import logging
@@ -320,8 +322,6 @@ def make_lexical_polarity_fn(*, debug: bool = False) -> PolarityLLM:
 # ---------------------------------------------------------------------------
 # Offline semantic backend (SentenceTransformer)
 # ---------------------------------------------------------------------------
-
-
 @lru_cache(maxsize=8)
 def make_free_polarity_fn(
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
@@ -449,13 +449,149 @@ def make_free_polarity_fn(
         return {m: out_u.get(m) for m in mentions}
 
     return _fn
+# ---------------------------------------------------------------------------
+# Hybrid backend (lexical -> semantic -> local generative fallback)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=8)
+def make_hybrid_polarity_fn(
+    *,
+    semantic_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    semantic_min_sim: float = 0.30,
+    semantic_min_margin: float = 0.10,
+    llm_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct",
+    llm_max_new_tokens: int = 96,
+    debug: bool = False,
+) -> PolarityLLM:
+    """
+    Build a controlled three-stage polarity cascade.
+
+Order:
+    1. lexical rules
+    2. SentenceTransformer semantic classifier
+    3. local generative LLM for unresolved mentions only
+    """
+    lexical_fn = make_lexical_polarity_fn(
+        debug=debug,
+    )
+
+    @lru_cache(maxsize=1)
+    def _semantic_fn() -> PolarityLLM:
+        return make_free_polarity_fn(
+            model_name=semantic_model_name,
+            min_sim=semantic_min_sim,
+            min_margin=semantic_min_margin,
+            debug=debug,
+        )
+
+    @lru_cache(maxsize=1)
+    def _generative_fn() -> PolarityLLM:
+        from Shopping_assistant.nlp.llm.local_polarity import (
+            make_local_generative_polarity_fn,
+        )
+
+        return make_local_generative_polarity_fn(
+            model_name=llm_model_name,
+            max_new_tokens=llm_max_new_tokens,
+            debug=debug,
+        )
+    def _fn(
+        clause_text: str,
+        mentions: List[str],
+    ) -> Dict[str, Optional[str]]:
+        if not mentions:
+            return {}
+
+        mentions_u = _dedup_preserve_order(
+            mentions
+        )
+
+        result: Dict[str, Optional[str]] = {
+            mention: None
+            for mention in mentions_u
+        }
+
+        # --------------------------------------------------------------
+        # Stage 1 — lexical
+        # --------------------------------------------------------------
+
+        lexical_raw = lexical_fn(
+            clause_text,
+            mentions_u,
+        ) or {}
+
+        for mention in mentions_u:
+            result[mention] = _norm_label(
+                lexical_raw.get(mention)
+            )
+
+        unresolved = [
+            mention
+            for mention in mentions_u
+            if result[mention] is None
+        ]
+
+        # --------------------------------------------------------------
+        # Stage 2 — SentenceTransformer
+        # --------------------------------------------------------------
+
+        if unresolved:
+            semantic_raw = _semantic_fn()(
+                clause_text,
+                unresolved,
+            ) or {}
+
+            for mention in unresolved:
+                label = _norm_label(
+                    semantic_raw.get(mention)
+                )
+
+                if label is not None:
+                    result[mention] = label
+
+        unresolved = [
+            mention
+            for mention in mentions_u
+            if result[mention] is None
+        ]
+
+        # --------------------------------------------------------------
+        # Stage 3 — local generative LLM
+        # --------------------------------------------------------------
+
+        if unresolved:
+            generative_raw = _generative_fn()(
+                clause_text,
+                unresolved,
+            ) or {}
+
+            for mention in unresolved:
+                result[mention] = _norm_label(
+                    generative_raw.get(mention)
+                )
+
+        if debug:
+            log.debug(
+                "[polarity][hybrid] "
+                "text=%r mentions=%r result=%r",
+                clause_text,
+                mentions_u,
+                result,
+            )
+
+        return {
+            mention: result.get(mention)
+            for mention in mentions
+        }
+
+    return _fn
 
 
 # ---------------------------------------------------------------------------
 # Backend dispatcher
 # ---------------------------------------------------------------------------
-
-
+@lru_cache(maxsize=8)
 @lru_cache(maxsize=8)
 def make_polarity_fn(
     *,
@@ -463,19 +599,70 @@ def make_polarity_fn(
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     min_sim: float = 0.30,
     min_margin: float = 0.10,
+    llm_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct",
+    llm_max_new_tokens: int = 96,
     debug: bool = False,
 ) -> PolarityLLM:
     """
-    Does:
-        Return a polarity backend. backend is read from SA_POLARITY_BACKEND when None.
-    """
-    b = (backend or _env_choice("SA_POLARITY_BACKEND", "semantic")).strip().lower()
-    if b in {"lex", "lexical", "rules"}:
-        return make_lexical_polarity_fn(debug=debug)
-    if b in {"free", "semantic", "st", "sentence-transformer"}:
-        return make_free_polarity_fn(model_name=model_name, min_sim=min_sim, min_margin=min_margin, debug=debug)
-    raise ValueError(f"Unknown polarity backend: {b!r} (expected: lexical|semantic)")
+    Return a polarity backend.
 
+    Supported backends:
+        - lexical
+        - semantic
+        - hybrid / llm-fallback
+
+    The hybrid backend runs:
+        lexical -> semantic -> local generative LLM fallback.
+    """
+    b = (
+        backend
+        or _env_choice(
+            "SA_POLARITY_BACKEND",
+            "semantic",
+        )
+    ).strip().lower()
+
+    if b in {
+        "lex",
+        "lexical",
+        "rules",
+    }:
+        return make_lexical_polarity_fn(
+            debug=debug,
+        )
+
+    if b in {
+        "free",
+        "semantic",
+        "st",
+        "sentence-transformer",
+    }:
+        return make_free_polarity_fn(
+            model_name=model_name,
+            min_sim=min_sim,
+            min_margin=min_margin,
+            debug=debug,
+        )
+
+    if b in {
+        "hybrid",
+        "llm",
+        "llm-fallback",
+        "generative-fallback",
+    }:
+        return make_hybrid_polarity_fn(
+            semantic_model_name=model_name,
+            semantic_min_sim=min_sim,
+            semantic_min_margin=min_margin,
+            llm_model_name=llm_model_name,
+            llm_max_new_tokens=llm_max_new_tokens,
+            debug=debug,
+        )
+
+    raise ValueError(
+        f"Unknown polarity backend: {b!r} "
+        "(expected: lexical|semantic|hybrid)"
+    )
 
 __all__ = [
     "PolarityLLM",
@@ -485,4 +672,5 @@ __all__ = [
     "make_lexical_polarity_fn",
     "make_free_polarity_fn",
     "make_polarity_fn",
+    "make_hybrid_polarity_fn",
 ]

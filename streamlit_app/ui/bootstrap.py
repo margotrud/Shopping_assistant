@@ -74,7 +74,7 @@ def warmup_nlp_stack() -> bool:
     try:
         do_pol = _env_bool("SA_WARMUP_POLARITY", "0")
         if do_pol:
-            from Shopping_assistant.nlp.polarity import make_polarity_fn  # type: ignore
+            from Shopping_assistant.nlp.parsing.polarity import make_polarity_fn # type: ignore
 
             _ = make_polarity_fn()
     except Exception:
